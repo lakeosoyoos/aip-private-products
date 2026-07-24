@@ -96,11 +96,21 @@ The passcode is never in the code. Set it on the Space:
   access controls. Now only invited HF accounts can even load the page, and the
   passcode gates it on top.
 
-## 7. Updating later
+## 7. Updating later — one command
 
-Commit changes locally and `git push hf main` again — the Space rebuilds. Data
-refreshes (new `data/catalog.db`) are just another commit; the app caches on the
-DB file's mtime, so a new DB invalidates the cached map/tables automatically.
+Once the `hf` remote is set (step 3), publishing an update is a single command:
+
+```bash
+./publish_hf.command             # regenerate map + workbook, run tests, commit, push
+./publish_hf.command --refresh   # re-scrape all sources first, then publish
+./publish_hf.command --dry-run   # preview what would change, commit/push nothing
+```
+
+It regenerates the derived artifacts from `data/catalog.db`, runs the test suite
+as a safety gate, refuses to stage any secret or `data/cache/` path, commits only
+what changed, and pushes to the Space (which then rebuilds). The app caches on the
+DB file's mtime, so a new `catalog.db` invalidates the cached map/tables
+automatically. Manual equivalent: commit locally and `git push hf main`.
 
 ---
 

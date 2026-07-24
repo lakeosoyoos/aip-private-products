@@ -1,0 +1,7 @@
+# AIP Private Products Catalog — runtime deps (>= floors, matches morgan_septic style)
+requests>=2.31
+beautifulsoup4>=4.12
+openpyxl>=3.1
+pypdf>=4.0
+cryptography>=3.1   # pypdf needs it for AES-encrypted brochures (e.g. Great American PDFs)
+playwright>=1.61     # SERFF Filing Access extractor (browser-driven); then: python -m playwright install chromium

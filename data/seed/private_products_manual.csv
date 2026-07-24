@@ -1,0 +1,8 @@
+aip_code,name,peril_type,coverage_type,crops,states,source_url,verified,notes
+CM,Crop Hail (GrainGuard),hail,named-peril,,,https://www.countryfinancial.com/en/insurance/crop/overview/coverages.html,1,"Browser-verified 2026-07-20: countryfinancial.com blocks automated fetch (Cloudflare TLS fingerprinting; HTTP 403 to all clients tested), so this menu is maintained by hand from the public coverages page. GrainGuard crop hail includes Good Samaritan, Stored Grain, and Land Motor Vehicle/Aircraft features."
+CM,Replant Endorsement,replant,endorsement,,,https://www.countryfinancial.com/en/insurance/crop/overview/coverages.html,1,"Browser-verified 2026-07-20 (see Crop Hail row for why manual)."
+CM,Wind Endorsement,wind,endorsement,,,https://www.countryfinancial.com/en/insurance/crop/overview/coverages.html,1,"Browser-verified 2026-07-20 (see Crop Hail row for why manual)."
+CM,Green Snap Endorsement,wind,endorsement,Corn,,https://www.countryfinancial.com/en/insurance/crop/overview/coverages.html,1,"Browser-verified 2026-07-20 (see Crop Hail row for why manual)."
+CM,Extra Harvest Expense,,supplemental,,,https://www.countryfinancial.com/en/insurance/crop/overview/coverages.html,1,"Browser-verified 2026-07-20 (see Crop Hail row for why manual)."
+CM,Added Value Enhancement (AVE) Policy,,supplemental,,,https://www.countryfinancial.com/en/insurance/crop/overview/coverages.html,1,"Browser-verified 2026-07-20 (see Crop Hail row for why manual)."
+CM,Personal Enhanced Coverage Option (PECO),area (yield/revenue),supplemental,,,https://www.countryfinancial.com/en/insurance/crop/overview/coverages.html,1,"Browser-verified 2026-07-20 (see Crop Hail row for why manual). Private complement to the federal ECO."

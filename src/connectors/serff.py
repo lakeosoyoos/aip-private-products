@@ -46,7 +46,10 @@ def _norm_company(name: str) -> str:
 # filing under a shorter or sibling name). Values are aips.aip_code.
 ALIASES = {
     "farmers mutual hail insurance company": "FH",  # files without "of Iowa" in some states
+    "great american insurance company of new york": "GA",  # GA affiliate entity
 }
+# Portal placeholders that intentionally map to no single AIP (multi-company filings).
+UNMAPPABLE = {"multiple"}
 
 
 def _aip_map(conn) -> dict[str, str]:

@@ -14,6 +14,11 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from . import config, stack
+from .connectors.rma_adm import (
+    SUPPLEMENTAL_PLAN_CODES,
+    plan_map_for_products,
+    split_plan_codes,
+)
 
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E3D")
 _HEADER_FONT = Font(bold=True, color="FFFFFF")
@@ -28,6 +33,11 @@ PRODUCT_COLUMNS = [
 AIP_COLUMNS = [
     ("aip_code", 10), ("name", 40), ("agreement_type", 14), ("reinsurance_year", 16),
     ("city", 18), ("state", 8), ("phone", 18), ("website", 40),
+]
+MARKET_COLUMNS = [
+    ("product_id", 8), ("product", 42), ("plan_codes", 12), ("crops", 28), ("states", 8),
+    ("county_rows", 12), ("net_acres", 16), ("liability", 18), ("total_premium", 16),
+    ("subsidy", 16), ("indemnity", 16), ("policies_sold", 14), ("years", 12),
 ]
 SERFF_COLUMNS = [
     ("serff_tracking_number", 20), ("state", 7), ("aip_code", 9), ("company_name", 36),
@@ -72,6 +82,59 @@ def _product_rows(conn) -> list[dict]:
     return out
 
 
+def _sob_market_rows(conn) -> list[dict]:
+    """Roll sob_sales up to one row per FEDERAL product (market reality per plan family).
+
+    Maps each sob_sales plan_code back to its catalog product via the same plan map the connectors
+    use; sums liability/premium/acres/indemnity/policies and counts distinct states and rows.
+    """
+    prods = [dict(r) for r in conn.execute(
+        "SELECT product_id, name, plan_code FROM products WHERE bucket != 'private'")]
+    plan_to_pid, _ = plan_map_for_products(prods)
+    pid_name = {p["product_id"]: p["name"] for p in prods}
+    pid_plans: dict[int, set] = {}
+    for p in prods:
+        for c in split_plan_codes(p["plan_code"] or SUPPLEMENTAL_PLAN_CODES.get(p["name"])):
+            pid_plans.setdefault(p["product_id"], set()).add(c)
+
+    acc: dict[int, dict] = {}
+    for r in conn.execute("SELECT * FROM sob_sales"):
+        pid = plan_to_pid.get(r["plan_code"])
+        if pid is None:
+            continue
+        d = acc.setdefault(pid, {
+            "rows": 0, "states": set(), "crops": set(), "years": set(),
+            "net_acres": 0.0, "liability": 0.0, "total_premium": 0.0,
+            "subsidy": 0.0, "indemnity": 0.0, "policies_sold": 0})
+        d["rows"] += 1
+        d["states"].add(r["state"])
+        d["crops"].add(r["crop"])
+        d["years"].add(r["year"])
+        for k in ("net_acres", "liability", "total_premium", "subsidy", "indemnity"):
+            d[k] += r[k] or 0.0
+        d["policies_sold"] += r["policies_sold"] or 0
+
+    out = []
+    for pid, d in acc.items():
+        out.append({
+            "product_id": pid,
+            "product": pid_name.get(pid, ""),
+            "plan_codes": ";".join(sorted(pid_plans.get(pid, set()))),
+            "crops": "; ".join(sorted(d["crops"])),
+            "states": len(d["states"]),
+            "county_rows": d["rows"],
+            "net_acres": round(d["net_acres"]),
+            "liability": round(d["liability"]),
+            "total_premium": round(d["total_premium"]),
+            "subsidy": round(d["subsidy"]),
+            "indemnity": round(d["indemnity"]),
+            "policies_sold": d["policies_sold"],
+            "years": ", ".join(str(y) for y in sorted(d["years"])),
+        })
+    out.sort(key=lambda r: r["liability"], reverse=True)
+    return out
+
+
 def build_workbook(conn, out_path: Path | str | None = None,
                    coverage_lines: list[str] | None = None) -> Path:
     wb = Workbook()
@@ -87,6 +150,10 @@ def build_workbook(conn, out_path: Path | str | None = None,
     _write_sheet(ws_aip, AIP_COLUMNS, aip_rows)
 
     stack.build_sheet(wb.create_sheet("Stack"), conn)
+
+    n_sob = conn.execute("SELECT COUNT(*) FROM sob_sales").fetchone()[0]
+    if n_sob:
+        _write_sheet(wb.create_sheet("Market (SoB)"), MARKET_COLUMNS, _sob_market_rows(conn))
 
     n_filings = conn.execute("SELECT COUNT(*) FROM serff_filings").fetchone()[0]
     if n_filings:

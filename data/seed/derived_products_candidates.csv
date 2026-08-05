@@ -1,0 +1,85 @@
+# derived_products_candidates.csv - HUMAN-GATED product-depth candidates (src/deepen.py).
+# NOT auto-imported. Review each row, then import selectively like private_products_manual.csv.
+# source_type: serff_derived  = product core recovered from a SERFF filing title (evidence =
+#   SERFF tracking number). brochure_derived = product named in a doc_url brochure/page
+#   (evidence = the doc URL). confidence: high = matched a named-product pattern; low = matched
+#   only a peril noun / distinctive acronym and may be an endorsement or filing variant - verify.
+# bucket=private, program=private_nonreinsured for every row. Dedup already run vs existing
+# catalog (same aip + normalized name/acronym) and within this file.
+aip_code,name,peril_type,coverage_type,source_type,evidence,confidence
+CP,Magnum Yield Protection,,,serff_derived,SERFF PERR-134389755,high
+EF,MPowerD,,,serff_derived,SERFF RURL-133217712,high
+EF,Crop Hail,hail,named-peril,serff_derived,SERFF RURL-128346606,low
+EF,Named Peril,named-peril,named-peril,serff_derived,SERFF RURL-131702097,low
+EF,Named Peril Replant,replant,named-peril,serff_derived,SERFF RURL-133876985,low
+EF,Wind Endorsement,wind,endorsement,serff_derived,SERFF RURL-134232013,low
+FA,Personal Enhanced Coverage Option (PECO),,supplemental,serff_derived,SERFF AFIS-134735297,high
+FA,Grain Fire (Named Peril),fire,named-peril,serff_derived,SERFF AFIS-134747292,low
+FA,Named Peril Replant,replant,named-peril,serff_derived,SERFF AFIS-131775456,low
+FH,Biotech Yield Assurance,,,serff_derived,SERFF FMHL-126944817,high
+FH,Fire Coverage,fire,,serff_derived,SERFF FMHL-133935906,low
+FH,Grain Fire (Named Peril),fire,named-peril,serff_derived,SERFF FMHL-130548648,low
+FH,Named Peril Replant,replant,named-peril,serff_derived,SERFF FMHL-125051869,low
+FH,Replant Option,replant,,serff_derived,SERFF FMHL-130488827,low
+FH,Wind Endorsement,wind,endorsement,brochure_derived,https://www.fmh.com/insurance/crop-hail/wind-and-greensnap/wind,low
+GA,BAND,,,brochure_derived,https://greatamericancrop.com/docs/default-source/site-documents/brochures/5604-crp-gap-brochure-010726.pdf?sfvrsn=ef0a74ff_1,high
+GA,Biotech Yield Assurance,,,serff_derived,SERFF GACX-G126973799,high
+GA,Price-Flex,,,serff_derived,SERFF GRTB-131729809,high
+GA,Private Area Revenue Coverage (PAR),revenue,,serff_derived,SERFF GACX-G129369575,high
+GA,Crop Hail,hail,named-peril,serff_derived,SERFF GACX-G128853283,low
+GA,Green Snap Endorsement,wind,endorsement,brochure_derived,https://greatamericancrop.com/products---policies/private-products,low
+GA,Named Peril,named-peril,named-peril,serff_derived,SERFF GRTB-133188472,low
+GA,Replant Option,replant,,serff_derived,SERFF GACX-126367118,low
+GA,Seed Corn Endorsement,,endorsement,serff_derived,SERFF GACX-G129958812,low
+GA,Wind Endorsement,wind,endorsement,serff_derived,SERFF GACX-G129875084,low
+HU,BOOST,,,serff_derived,SERFF HINC-132180803,high
+HU,Boost-Max,,,serff_derived,SERFF HINC-132635630,high
+HU,Commercial Nursery Supplement,,supplemental,serff_derived,SERFF HINC-129444242,high
+HU,Dairy Price Enhancement Coverage,,supplemental,serff_derived,SERFF HINC-132997743,high
+HU,MPowerD,,,serff_derived,SERFF HINC-131139506,high
+HU,MyYield Max,,,brochure_derived,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/band-revenue-protection,high
+HU,Price-Flex,,,serff_derived,SERFF HINC-131067836,high
+HU,Private Area Revenue Coverage (PAR),revenue,,serff_derived,SERFF HINC-129880514,high
+HU,Production Hail,hail,named-peril,brochure_derived,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/crop-hail-named-peril,high
+HU,Total Revenue Coverage,revenue,endorsement,serff_derived,SERFF HINC-130294036,high
+HU,eZ-Hail,hail,named-peril,brochure_derived,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/crop-hail-named-peril,high
+HU,Adjusted Rainfall Index,rain,,serff_derived,SERFF HINC-129665161,low
+HU,CLIFF,,,serff_derived,SERFF HINC-132053689,low
+HU,Excess Moisture,rain,,serff_derived,SERFF HINC-132053677,low
+HU,Flex Lease,,,serff_derived,SERFF HINC-132563507,low
+HU,Grain Fire (Named Peril),fire,named-peril,brochure_derived,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/crop-hail-named-peril,low
+HU,Green Snap Endorsement,hail,endorsement,serff_derived,SERFF HINC-129434841,low
+HU,PRF Over/Under,,,serff_derived,SERFF HINC-129238014,low
+HU,Pasture Fire,fire,,serff_derived,SERFF HINC-131780474,low
+HU,Replant Option,replant,,brochure_derived,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/crop-hail-named-peril,low
+HU,Seed Corn Endorsement,hail,endorsement,serff_derived,SERFF HINC-130113492,low
+NA,Biotech Yield Assurance,,,serff_derived,SERFF NAUI-126950395,high
+NA,Production Hail,hail,named-peril,serff_derived,SERFF NAUI-130948905,high
+NA,Crop Hail,hail,named-peril,serff_derived,SERFF NAUI-125379400,low
+NA,Green Snap Endorsement,hail,endorsement,serff_derived,SERFF NAUI-128004458,low
+NA,Named Peril Replant,replant,named-peril,serff_derived,SERFF NAUI-125417007,low
+PL,Biotech Yield Assurance,,,serff_derived,SERFF PRAG-126989668,high
+PL,MPowerD,,,serff_derived,SERFF PRAG-131135537,high
+PL,Price-Flex,,,serff_derived,SERFF PRAG-129277440,high
+PL,RPowerD,,,serff_derived,SERFF PRAG-131334481,high
+PL,Revenue Band & Yield Band Coverage,revenue,,serff_derived,SERFF PRAG-127012755,high
+PL,Weather Insurance Policy,,,brochure_derived,https://www.proag.com/products/private-products/weather-products/,high
+PL,Fire Coverage,fire,,brochure_derived,https://www.proag.com/products/private-products/crop-fire/,low
+PL,Replant Option,replant,supplemental,serff_derived,SERFF PRAG-131803982,low
+PL,Seed Corn Endorsement,,endorsement,serff_derived,SERFF PRAG-128137221,low
+PS,Revenue Boost,revenue,,serff_derived,SERFF PALO-134798531,high
+PS,Grain Fire (Named Peril),fire,named-peril,serff_derived,SERFF PALO-134810482,low
+PS,Named Peril Replant,replant,named-peril,serff_derived,SERFF PALO-134725522,low
+RH,Fire Coverage,fire,,brochure_derived,https://www.rainhail.com/d/ps/coverages/stand-alone,low
+RH,Replant Option,replant,,brochure_derived,https://www.rainhail.com/d/ps/coverages/crop-hail,low
+RH,Seed Corn Endorsement,,endorsement,brochure_derived,https://www.rainhail.com/d/ps/coverages/stand-alone,low
+WN,APCO,,,serff_derived,SERFF ARMT-129304257,high
+WN,Biotech Yield Assurance,,,serff_derived,SERFF ARMT-126664016,high
+WN,Production Cost Insurance Policy,,,serff_derived,SERFF ARMT-131217628,high
+WN,REVCO,,,serff_derived,SERFF ARMT-129835811,high
+WN,RPowerD,,,serff_derived,SERFF ARMT-131221399,high
+WN,Revenue Band & Yield Band Coverage,revenue,,serff_derived,SERFF ARMT-132971786,high
+WN,Select Programs,,,serff_derived,SERFF ARMT-132689474,high
+WN,Weather Insurance Policy,,,serff_derived,SERFF ARMT-129373921,high
+WN,ARCH Program,,,serff_derived,SERFF ARMT-132693710,low
+WN,Fire Coverage,fire,,brochure_derived,https://www.agrisompo.com/products/private-products/named-peril/,low

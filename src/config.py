@@ -36,6 +36,7 @@ class Config:
     sources: dict[str, bool]
     rowcrops_extra: list[str]
     rma_adm_base_url: str
+    rma_sob_base_url: str
     serff_toi_code: str
     serff_user_agent: str
     _raw: configparser.ConfigParser = field(repr=False, default=None)
@@ -57,6 +58,7 @@ def load(path: Path | str | None = None) -> Config:
     sources = {k: _as_bool(v) for k, v in parser["sources"].items()}
 
     adm = parser["rma_adm"] if parser.has_section("rma_adm") else {}
+    sob = parser["rma_sob"] if parser.has_section("rma_sob") else {}
     serff = parser["serff"] if parser.has_section("serff") else {}
 
     for d in (DATA_DIR, CACHE_DIR, OUTPUT_DIR):
@@ -74,6 +76,9 @@ def load(path: Path | str | None = None) -> Config:
         rowcrops_extra=_split_csv(parser.get("rowcrops", "extra", fallback="")),
         rma_adm_base_url=(adm.get("base_url") if adm else "")
         or "https://pubfs-rma.fpac.usda.gov/pub/References/actuarial_data_master/{year}/",
+        rma_sob_base_url=(sob.get("base_url") if sob else "")
+        or "https://pubfs-rma.fpac.usda.gov/pub/Web_Data_Files/Summary_of_Business/"
+        "state_county_crop/",
         serff_toi_code=(serff.get("toi_code") if serff else "") or "02.1000",
         serff_user_agent=(serff.get("browser_user_agent") if serff else "")
         or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "

@@ -82,6 +82,33 @@ CREATE TABLE IF NOT EXISTS product_counties (
     FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE
 );
 
+-- Market reality (Summary of Business): which FEDERAL plans actually SOLD, WHERE, and HOW MUCH.
+-- Populated by the rma_sob connector from RMA's public State/County/Crop-with-Coverage-Level file
+-- (sobcov_<year>.zip), aggregated up from its coverage-level grain to one row per
+-- year x state x county x crop x plan. Joins the catalog's federal products at query time via
+-- products.plan_code (semicolon lists). The public file carries no AIP/company identifier, so this
+-- is PLAN grain, not AIP grain (RMA does not publish AIP-identified SoB at this granularity).
+-- net_acres = insured acres for the plan (base plans report in Net Reported Quantity, endorsements
+-- like SCO/STAX/ECO/MCO in Endorsed/Companion Acres); the connector takes whichever applies.
+CREATE TABLE IF NOT EXISTS sob_sales (
+    year            INTEGER NOT NULL,
+    state           TEXT NOT NULL,     -- 2-letter USPS
+    county_fips     TEXT NOT NULL,     -- 5-digit FIPS (state+county)
+    crop            TEXT NOT NULL,     -- canonical catalog crop (same names as product_crops)
+    commodity_code  TEXT,              -- 4-digit RMA commodity code
+    plan_code       TEXT NOT NULL,     -- 2-digit RMA insurance plan code
+    plan_abbrev     TEXT,              -- e.g. SCO-RP, STAX-RP, ECO-YP
+    net_acres       REAL,
+    liability       REAL,
+    total_premium   REAL,
+    subsidy         REAL,
+    indemnity       REAL,
+    policies_sold   INTEGER,
+    source          TEXT,              -- e.g. sobcov_2026
+    fetched_at      TEXT,
+    PRIMARY KEY (year, state, county_fips, crop, plan_code)
+);
+
 CREATE TABLE IF NOT EXISTS documents (
     doc_id          INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id      INTEGER,
@@ -169,7 +196,8 @@ def _main() -> None:
         init_db(conn)
         print(f"Schema ready at {config.DB_PATH}")
     if args.counts:
-        for t in ("aips", "products", "product_crops", "product_states", "documents", "fetch_log"):
+        for t in ("aips", "products", "product_crops", "product_states", "sob_sales",
+                  "documents", "fetch_log"):
             n = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
             print(f"{t:16} {n}")
     conn.close()

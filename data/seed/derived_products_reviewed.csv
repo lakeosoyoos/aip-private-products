@@ -1,0 +1,40 @@
+# derived_products_reviewed.csv - HUMAN-APPROVED subset of derived_products_candidates.csv
+# Loaded by the deepen_seed connector into products (bucket=private, verified=0).
+# Each row was surfaced by src/deepen.py from a SERFF filing title or brochure and
+# hand-approved 2026-08-05. filing_id set for serff_derived; doc_url for brochure_derived.
+aip_code,name,peril_type,coverage_type,source_type,filing_id,doc_url,evidence
+CP,Magnum Yield Protection,,,serff_derived,PERR-134389755,,SERFF PERR-134389755
+EF,MPowerD,,,serff_derived,RURL-133217712,,SERFF RURL-133217712
+FA,Personal Enhanced Coverage Option (PECO),,supplemental,serff_derived,AFIS-134735297,,SERFF AFIS-134735297
+FH,Biotech Yield Assurance,,,serff_derived,FMHL-126944817,,SERFF FMHL-126944817
+GA,BAND,,,brochure_derived,,https://greatamericancrop.com/docs/default-source/site-documents/brochures/5604-crp-gap-brochure-010726.pdf?sfvrsn=ef0a74ff_1,https://greatamericancrop.com/docs/default-source/site-documents/brochures/5604-crp-gap-brochure-010726.pdf?sfvrsn=ef0a74ff_1
+GA,Biotech Yield Assurance,,,serff_derived,GACX-G126973799,,SERFF GACX-G126973799
+GA,Price-Flex,,,serff_derived,GRTB-131729809,,SERFF GRTB-131729809
+GA,Private Area Revenue Coverage (PAR),revenue,,serff_derived,GACX-G129369575,,SERFF GACX-G129369575
+HU,BOOST,,,serff_derived,HINC-132180803,,SERFF HINC-132180803
+HU,Boost-Max,,,serff_derived,HINC-132635630,,SERFF HINC-132635630
+HU,Commercial Nursery Supplement,,supplemental,serff_derived,HINC-129444242,,SERFF HINC-129444242
+HU,Dairy Price Enhancement Coverage,,supplemental,serff_derived,HINC-132997743,,SERFF HINC-132997743
+HU,MPowerD,,,serff_derived,HINC-131139506,,SERFF HINC-131139506
+HU,MyYield Max,,,brochure_derived,,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/band-revenue-protection,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/band-revenue-protection
+HU,Price-Flex,,,serff_derived,HINC-131067836,,SERFF HINC-131067836
+HU,Private Area Revenue Coverage (PAR),revenue,,serff_derived,HINC-129880514,,SERFF HINC-129880514
+HU,Production Hail,hail,named-peril,brochure_derived,,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/crop-hail-named-peril,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/crop-hail-named-peril
+HU,Total Revenue Coverage,revenue,endorsement,serff_derived,HINC-130294036,,SERFF HINC-130294036
+HU,eZ-Hail,hail,named-peril,brochure_derived,,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/crop-hail-named-peril,https://hudsoncroplivestock.com/products/supplemental-and-crop-hail/crop-hail-named-peril
+NA,Biotech Yield Assurance,,,serff_derived,NAUI-126950395,,SERFF NAUI-126950395
+NA,Production Hail,hail,named-peril,serff_derived,NAUI-130948905,,SERFF NAUI-130948905
+PL,Biotech Yield Assurance,,,serff_derived,PRAG-126989668,,SERFF PRAG-126989668
+PL,MPowerD,,,serff_derived,PRAG-131135537,,SERFF PRAG-131135537
+PL,Price-Flex,,,serff_derived,PRAG-129277440,,SERFF PRAG-129277440
+PL,RPowerD,,,serff_derived,PRAG-131334481,,SERFF PRAG-131334481
+PL,Revenue Band & Yield Band Coverage,revenue,,serff_derived,PRAG-127012755,,SERFF PRAG-127012755
+PL,Weather Insurance Policy,,,brochure_derived,,https://www.proag.com/products/private-products/weather-products/,https://www.proag.com/products/private-products/weather-products/
+PS,Revenue Boost,revenue,,serff_derived,PALO-134798531,,SERFF PALO-134798531
+WN,APCO,,,serff_derived,ARMT-129304257,,SERFF ARMT-129304257
+WN,Biotech Yield Assurance,,,serff_derived,ARMT-126664016,,SERFF ARMT-126664016
+WN,Production Cost Insurance Policy,,,serff_derived,ARMT-131217628,,SERFF ARMT-131217628
+WN,REVCO,,,serff_derived,ARMT-129835811,,SERFF ARMT-129835811
+WN,RPowerD,,,serff_derived,ARMT-131221399,,SERFF ARMT-131221399
+WN,Select Programs,,,serff_derived,ARMT-132689474,,SERFF ARMT-132689474
+WN,Weather Insurance Policy,,,serff_derived,ARMT-129373921,,SERFF ARMT-129373921

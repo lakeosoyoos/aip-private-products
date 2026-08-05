@@ -2,5 +2,8 @@
 # The app imports the pipeline modules (db/webmap/stack/export_xlsx) but runs
 # none of the scrapers, so it does NOT need requests/beautifulsoup4/pypdf/
 # cryptography/playwright. Those live in requirements-pipeline.txt (data refresh).
+# openpyxl IS needed: src.stack (imported for product classification) and the
+# About-tab workbook download both use it.
 streamlit==1.60.0
 pandas>=2.2
+openpyxl>=3.1

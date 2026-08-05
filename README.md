@@ -1,14 +1,3 @@
----
-title: AIP Crop-Insurance Catalog
-emoji: 🌾
-colorFrom: green
-colorTo: blue
-sdk: streamlit
-sdk_version: 1.60.0
-app_file: streamlit_app.py
-pinned: false
----
-
 # AIP Private Products Catalog (row-crop crop insurance)
 
 A repeatable tool that catalogs the "private" products Approved Insurance Providers (AIPs) offer in
@@ -85,7 +74,7 @@ deterministic keyword matching only) — private products with crops 20→69, wi
 explicit + 15 nationwide; 30 RCIS products unenrichable (JS-only doc pages), 21 docs name no
 crop/state (left empty on purpose).
 
-## Web app (Streamlit / Hugging Face Spaces)
+## Web app (Streamlit Community Cloud)
 
 A passcode-gated Streamlit app (`streamlit_app.py`) presents the catalog as five
 tabs — **Map** (the full interactive map, embedded), **Products** (filterable
@@ -102,8 +91,9 @@ the full pipeline deps are in `requirements-pipeline.txt`).
 
 The gate reads the passcode from Streamlit secrets (`app_passcode`, or a
 `[passcodes]` table) with an `APP_PASSCODE` env-var fallback — never hardcoded.
-See **DEPLOY_HF.md** for the Hugging Face Spaces deploy steps and how to restrict
-access to specific people.
+See **DEPLOY.md** for the Streamlit Community Cloud deploy steps (free; deploys
+from a GitHub repo) and how to restrict access to specific people. Update the
+live app anytime with `./publish.command`.
 
 ## Extending
 

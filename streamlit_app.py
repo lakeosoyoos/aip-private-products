@@ -1,15 +1,16 @@
 """AIP crop-insurance catalog — Streamlit web app (passcode-gated).
 
-Deploys on Hugging Face Spaces (SDK: streamlit). The whole UI sits behind a
-passcode gate; the passcode is read from st.secrets / APP_PASSCODE and is never
-hardcoded. Everything below the gate is a thin view over the existing pipeline
-modules (src.db, src.webmap, src.stack, src.export_xlsx) — imported, not rebuilt.
+Deploys on Streamlit Community Cloud (main file: streamlit_app.py). The whole UI
+sits behind a passcode gate; the passcode is read from st.secrets / APP_PASSCODE
+and is never hardcoded. Everything below the gate is a thin view over the existing
+pipeline modules (src.db, src.webmap, src.stack, src.export_xlsx) — imported, not
+rebuilt.
 """
 from __future__ import annotations
 
-import glob
 import json
 import os
+import tempfile
 
 import streamlit as st
 
@@ -106,6 +107,24 @@ def _classified(_mtime: float):
 @st.cache_data(show_spinner=False)
 def _counts(_mtime: float):
     return data.catalog_counts(_conn())
+
+
+@st.cache_data(show_spinner="Building the workbook…")
+def _xlsx_bytes(_mtime: float) -> bytes:
+    """Full catalog workbook generated in-memory (no committed xlsx needed). Cached on DB mtime."""
+    from src.export_xlsx import build_workbook
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        path = tmp.name
+    try:
+        build_workbook(_conn(), out_path=path)
+        with open(path, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 # -------------------------------------------------------------------- tabs
@@ -324,20 +343,14 @@ def _tab_about(mtime: float) -> None:
     c3.metric("Product-state rows", counts.get("product_states", 0))
     c4.metric("Documents", counts.get("documents", 0))
 
-    st.markdown("#### Latest Excel export")
-    xlsx_files = sorted(glob.glob(str(config.OUTPUT_DIR / "*.xlsx")))
-    xlsx_files = [f for f in xlsx_files if not os.path.basename(f).startswith("~$")]
-    if xlsx_files:
-        latest = xlsx_files[-1]
-        with open(latest, "rb") as fh:
-            st.download_button(
-                f"Download {os.path.basename(latest)}",
-                fh.read(),
-                file_name=os.path.basename(latest),
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-    else:
-        st.caption("No Excel export present in output/ (run the pipeline to generate one).")
+    st.markdown("#### Excel export")
+    st.caption("Full catalog — Products, AIPs, Stack, SERFF Filings, and Coverage sheets.")
+    st.download_button(
+        "Download full catalog (.xlsx)",
+        _xlsx_bytes(mtime),
+        file_name="aip_products_catalog.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
     st.caption(
         "All data pulled is public. Sources: live RMA AIP API, curated 508(h) "

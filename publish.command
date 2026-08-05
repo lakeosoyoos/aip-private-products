@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
 #
-# One-command update for the live Streamlit app on Hugging Face Spaces.
+# One-command update for the live Streamlit app on Streamlit Community Cloud.
 #
 # The app serves data/catalog.db (the map is rebuilt in-memory from it at runtime),
-# so "updating the app" = commit the current catalog + assets and push to the Space.
-# This script regenerates the local artifacts, runs the tests as a safety gate, commits
-# only what changed, and pushes.
+# so "updating the app" = commit the current catalog + assets and push to GitHub.
+# Streamlit Cloud watches the repo and auto-redeploys on push. This script regenerates
+# the local artifacts, runs the tests as a safety gate, commits only what changed, and pushes.
 #
-#   ./publish_hf.command                # regenerate + commit + push current catalog
-#   ./publish_hf.command --refresh      # re-run all scrapers first, then publish
-#   ./publish_hf.command --dry-run      # do everything except commit/push (preview)
-#   ./publish_hf.command --remote=hf    # push target (default: hf)
-#   ./publish_hf.command --no-test      # skip the pytest gate (not recommended)
+#   ./publish.command                    # regenerate + commit + push current catalog
+#   ./publish.command --refresh          # re-run all scrapers first, then publish
+#   ./publish.command --dry-run          # do everything except commit/push (preview)
+#   ./publish.command --remote=origin    # push target (default: origin)
+#   ./publish.command --no-test          # skip the pytest gate (not recommended)
 #
-# First-time setup (once): create the Space (SDK=Streamlit), then
-#   git remote add hf https://huggingface.co/spaces/<user>/<space>
-# and set the APP_PASSCODE secret in the Space settings. See DEPLOY_HF.md.
+# First-time setup (once): push this repo to GitHub, connect it at share.streamlit.io
+# (main file: streamlit_app.py), and set app_passcode in the app's Secrets. See DEPLOY.md.
 #
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -24,7 +23,7 @@ PY=.venv/bin/python
 REFRESH=0
 DRYRUN=0
 RUNTESTS=1
-REMOTE=hf
+REMOTE=origin
 STATES=IA,IL,NE,MN,IN
 for arg in "$@"; do
   case "$arg" in
@@ -45,8 +44,8 @@ step() { printf '\n\033[1;32m==>\033[0m %s\n' "$1"; }
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "Not a git repo."; exit 1; }
 [ -x "$PY" ] || { echo "Missing venv at $PY — create it and pip install -r requirements-pipeline.txt"; exit 1; }
 if [ "$DRYRUN" -eq 0 ] && ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
-  echo "No '$REMOTE' remote yet. Add it once (see DEPLOY_HF.md):"
-  echo "  git remote add $REMOTE https://huggingface.co/spaces/<user>/<space>"
+  echo "No '$REMOTE' remote yet. Add it once (see DEPLOY.md):"
+  echo "  git remote add $REMOTE https://github.com/<user>/<repo>.git"
   exit 1
 fi
 
@@ -96,6 +95,6 @@ STAMP=$(date +%Y-%m-%d)
 NPROD=$(sqlite3 data/catalog.db "SELECT COUNT(*) FROM products" 2>/dev/null || echo "?")
 step "Committing…"
 git commit -q -m "Update catalog data ($STAMP): ${NPROD} products"
-step "Pushing to '$REMOTE' (HF will prompt for username + a write token)…"
+step "Pushing to '$REMOTE' (GitHub may prompt for username + a personal access token)…"
 git push "$REMOTE" HEAD:main
-step "Done. The Space rebuilds automatically in ~1–2 min."
+step "Done. Streamlit Cloud redeploys automatically in ~1–2 min."

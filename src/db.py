@@ -82,6 +82,26 @@ CREATE TABLE IF NOT EXISTS product_counties (
     FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE
 );
 
+-- PRF (Pasture, Rangeland, Forage — rainfall index, plan code 13) County Base Values: the RMA
+-- per-acre dollar value by county that scales protection (acres x productivity factor x coverage
+-- level x CBV). County-level (the rainfall index/rates are grid-level, but the CBV is by county).
+-- Varies by intended use (Grazing vs Haying) and practice (Irrigated vs Non-Irrigated, and
+-- organic where applicable). Populated by the prf_adm connector from the ADM. Drives the app's
+-- PRF county heat map. NOT part of the row-crop private-products catalog — a companion dataset.
+CREATE TABLE IF NOT EXISTS prf_county (
+    year               INTEGER NOT NULL,
+    state              TEXT NOT NULL,     -- 2-letter USPS
+    county_fips        TEXT NOT NULL,     -- 5-digit FIPS
+    county_name        TEXT,
+    intended_use       TEXT NOT NULL,     -- Grazing | Haying
+    irrigation_practice TEXT NOT NULL,    -- Irrigated | Non-Irrigated
+    organic_practice   TEXT NOT NULL DEFAULT 'Conventional',  -- Conventional | Organic | Transitional
+    county_base_value  REAL,              -- $/acre
+    source             TEXT,              -- e.g. adm_2026
+    fetched_at         TEXT,
+    PRIMARY KEY (year, county_fips, intended_use, irrigation_practice, organic_practice)
+);
+
 -- Market reality (Summary of Business): which FEDERAL plans actually SOLD, WHERE, and HOW MUCH.
 -- Populated by the rma_sob connector from RMA's public State/County/Crop-with-Coverage-Level file
 -- (sobcov_<year>.zip), aggregated up from its coverage-level grain to one row per

@@ -15,6 +15,7 @@ import tempfile
 import streamlit as st
 
 from src import config
+from src.prfmap import build_prf_payload, render_prf_html
 from src.stack import FEDERAL_BANDS, LAYERS, classified_products
 from src.webapp import auth, data
 from src.webmap import build_payload, ensure_assets, render_html
@@ -25,7 +26,9 @@ st.set_page_config(
     layout="wide",
 )
 
-DB_PATH = config.DB_PATH
+# DB_PATH is config.DB_PATH in production; AIP_DB_PATH lets a verification run
+# point the app at a copy with synthetic rows without touching the real catalog.
+DB_PATH = os.environ.get("AIP_DB_PATH") or config.DB_PATH
 
 
 # --------------------------------------------------------------------- gate
@@ -90,6 +93,29 @@ def _map_html(_mtime: float) -> str:
 
 
 @st.cache_data(show_spinner=False)
+def _prf_row_count(_mtime: float) -> int:
+    """Rows in prf_county; 0 (not an error) when empty or the table is missing."""
+    try:
+        return _conn().execute("SELECT COUNT(*) FROM prf_county").fetchone()[0]
+    except Exception:
+        return 0
+
+
+@st.cache_data(show_spinner="Building the PRF heat map…")
+def _prf_html(_mtime: float) -> str:
+    """Self-contained PRF County Base Value choropleth. Cached on the DB mtime."""
+    assets = ensure_assets()
+    payload = build_prf_payload(_conn())
+    atlas = json.loads(assets["counties-10m.json"])
+    return render_prf_html(
+        payload,
+        d3_js=assets["d3.v7.min.js"],
+        topojson_js=assets["topojson-client.min.js"],
+        atlas=atlas,
+    )
+
+
+@st.cache_data(show_spinner=False)
 def _products_df(_mtime: float):
     return data.products_dataframe(_conn())
 
@@ -136,6 +162,27 @@ def _tab_map(mtime: float) -> None:
         "filings); federal products at ADM county grain where loaded."
     )
     st.components.v1.html(_map_html(mtime), height=820, scrolling=True)
+
+
+def _tab_prf(mtime: float) -> None:
+    st.subheader("PRF County Base Value heat map")
+    st.caption(
+        "PRF (Pasture, Rangeland, Forage — rainfall index). The **County Base "
+        "Value (CBV)** is the per-acre county dollar figure that scales PRF "
+        "protection: protection = acres × productivity factor × coverage level × "
+        "CBV. The embedded map has its own intended-use (Grazing / Haying), "
+        "irrigation-practice (Irrigated / Non-Irrigated), organic, and year "
+        "dropdowns; darker counties carry a higher $/acre CBV, and counties with "
+        "no value for the current selection are shown neutral."
+    )
+    if _prf_row_count(mtime) == 0:
+        st.info(
+            "PRF data not loaded yet — run the `prf_adm` connector to populate the "
+            "`prf_county` table (County Base Values). The heat map will appear here "
+            "once values are loaded."
+        )
+        return
+    st.components.v1.html(_prf_html(mtime), height=820, scrolling=True)
 
 
 def _tab_products(mtime: float) -> None:
@@ -372,16 +419,18 @@ def main() -> None:
             st.rerun()
 
     mtime = _db_mtime()
-    tabs = st.tabs(["Map", "Products", "Stack", "SERFF Filings", "About"])
+    tabs = st.tabs(["Map", "PRF", "Products", "Stack", "SERFF Filings", "About"])
     with tabs[0]:
         _tab_map(mtime)
     with tabs[1]:
-        _tab_products(mtime)
+        _tab_prf(mtime)
     with tabs[2]:
-        _tab_stack(mtime)
+        _tab_products(mtime)
     with tabs[3]:
-        _tab_serff(mtime)
+        _tab_stack(mtime)
     with tabs[4]:
+        _tab_serff(mtime)
+    with tabs[5]:
         _tab_about(mtime)
 
 

@@ -23,6 +23,7 @@ from .connectors.aip_sites.base import AipSites
 from .connectors.base import Context
 from .connectors.deepen_seed import DeepenSeed
 from .connectors.manual_seed import ManualSeed
+from .connectors.prf_adm import PrfAdm
 from .connectors.rma_adm import RmaAdm
 from .connectors.rma_aip_listing import RmaAipListing
 from .connectors.rma_plans import RmaPlans
@@ -34,6 +35,7 @@ REGISTRY = {
     "rma_aip_listing": RmaAipListing,
     "rma_plans": RmaPlans,
     "rma_adm": RmaAdm,
+    "prf_adm": PrfAdm,
     "rma_sob": RmaSob,
     "serff": Serff,
     "aip_sites": AipSites,

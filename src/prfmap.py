@@ -164,7 +164,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     background: var(--surface);
   }
   .filters label { color: var(--ink-2); font-size: 12px; }
-  .filters select {
+  .filters select, .rangebar select {
     font: inherit; font-size: 13px; padding: 4px 6px; max-width: 230px;
     border: 1px solid var(--baseline); border-radius: 6px; background: var(--surface);
     color: var(--ink);
@@ -240,13 +240,13 @@ _TEMPLATE = r"""<!DOCTYPE html>
   Generated __GENERATED__.</div>
 </header>
 <div class="filters">
-  <label>Intended use <select id="fUse"></select></label>
   <label>Irrigation <select id="fPractice"></select></label>
   <label>Organic <select id="fOrganic"></select></label>
   <label id="yearWrap" style="display:none">Year <select id="fYear"></select></label>
   <span id="countLine" style="color:var(--muted);font-size:12px;margin-left:auto"></span>
 </div>
 <div class="rangebar" id="rangebar">
+  <label>Intended use <select id="fUse"></select></label>
   <label>County Base Value range</label>
   <div class="dual">
     <div class="track"></div>

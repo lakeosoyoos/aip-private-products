@@ -169,6 +169,35 @@ _TEMPLATE = r"""<!DOCTYPE html>
     border: 1px solid var(--baseline); border-radius: 6px; background: var(--surface);
     color: var(--ink);
   }
+  /* CBV range slider (dual-thumb) — filters which counties are shaded by $/acre. */
+  .rangebar {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 9px 18px; border-bottom: 1px solid var(--grid); background: var(--surface);
+  }
+  .rangebar > label { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+  .dual { position: relative; flex: 1; min-width: 220px; max-width: 520px; height: 26px; }
+  .dual .track { position: absolute; top: 11px; left: 0; right: 0; height: 4px;
+    background: var(--grid); border-radius: 3px; }
+  .dual .fill { position: absolute; top: 11px; height: 4px; background: #41ab5d; border-radius: 3px; }
+  .dual input[type=range] {
+    position: absolute; top: 0; left: 0; width: 100%; height: 26px; margin: 0;
+    -webkit-appearance: none; appearance: none; background: transparent; pointer-events: none;
+  }
+  .dual input[type=range]::-webkit-slider-runnable-track { height: 26px; background: transparent; }
+  .dual input[type=range]::-moz-range-track { height: 26px; background: transparent; }
+  .dual input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; pointer-events: auto;
+    width: 16px; height: 16px; border-radius: 50%; background: var(--surface);
+    border: 2px solid #238b45; box-shadow: 0 1px 3px var(--ring); cursor: pointer;
+  }
+  .dual input[type=range]::-moz-range-thumb {
+    pointer-events: auto; width: 16px; height: 16px; border-radius: 50%;
+    background: var(--surface); border: 2px solid #238b45; cursor: pointer;
+  }
+  .rangebar .readout { font-size: 12.5px; color: var(--ink);
+    font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .rangebar .reset { font: inherit; font-size: 12px; color: var(--accent);
+    background: none; border: none; cursor: pointer; padding: 0; }
   #main { flex: 1; display: flex; min-height: 0; }
   #mapWrap { flex: 1; position: relative; min-width: 0; }
   #map { width: 100%; height: 100%; display: block; }
@@ -216,6 +245,17 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <label>Organic <select id="fOrganic"></select></label>
   <label id="yearWrap" style="display:none">Year <select id="fYear"></select></label>
   <span id="countLine" style="color:var(--muted);font-size:12px;margin-left:auto"></span>
+</div>
+<div class="rangebar" id="rangebar">
+  <label>County Base Value range</label>
+  <div class="dual">
+    <div class="track"></div>
+    <div class="fill" id="rFill"></div>
+    <input type="range" id="rMin">
+    <input type="range" id="rMax">
+  </div>
+  <span class="readout" id="rReadout"></span>
+  <button class="reset" id="rReset" type="button">reset</button>
 </div>
 <div id="main">
   <div id="mapWrap">
@@ -307,6 +347,29 @@ var DATA = __PAYLOAD__;
   if (hi <= lo) hi = lo + 1;
   var scale = d3.scaleQuantize().domain([lo, hi]).range(RAMP);
 
+  // ---------------- CBV range slider (dual thumb; hides counties outside the $ range,
+  // color mapping stays absolute so a given CBV is always the same green).
+  var rMin = document.getElementById("rMin"),
+      rMax = document.getElementById("rMax"),
+      rFill = document.getElementById("rFill"),
+      rReadout = document.getElementById("rReadout"),
+      rBar = document.getElementById("rangebar");
+  var RLO = Math.floor(lo), RHI = Math.ceil(hi);
+  if (RHI <= RLO) RHI = RLO + 1;
+  [rMin, rMax].forEach(function (r) { r.min = RLO; r.max = RHI; r.step = 1; });
+  rMin.value = RLO; rMax.value = RHI;
+  if (!hasData) rBar.style.display = "none";
+  function rangeLo() { return Math.min(+rMin.value, +rMax.value); }
+  function rangeHi() { return Math.max(+rMin.value, +rMax.value); }
+  function isFullRange() { return rangeLo() <= RLO && rangeHi() >= RHI; }
+  function updateRange() {
+    var span = (RHI - RLO) || 1;
+    var a = (rangeLo() - RLO) / span, b = (rangeHi() - RLO) / span;
+    rFill.style.left = (a * 100) + "%";
+    rFill.style.width = ((b - a) * 100) + "%";
+    rReadout.textContent = usdShort(rangeLo()) + " – " + usdShort(rangeHi()) + "/ac";
+  }
+
   function usd(v) {
     if (v === null || v === undefined) return "no value";
     return "$" + (Math.round(v * 100) / 100).toLocaleString(undefined,
@@ -361,10 +424,11 @@ var DATA = __PAYLOAD__;
   // ---------------- render / recolor
   function refresh() {
     var s = sel();
+    var rlo = rangeLo(), rhi = rangeHi();
     var shaded = 0;
     countySel.attr("fill", function (d) {
       var v = cbvFor(d.id, s);
-      if (v === null) return NONE;
+      if (v === null || v < rlo || v > rhi) return NONE;   // outside selected $ range -> neutral
       shaded++;
       return scale(v);
     });
@@ -372,9 +436,12 @@ var DATA = __PAYLOAD__;
     if (!hasData) {
       line.textContent = "";
     } else {
-      line.textContent = shaded + " counties with a CBV for " +
-        s.use + " / " + s.practice + " / " + s.organic +
+      var forSel = s.use + " / " + s.practice + " / " + s.organic +
         (yearsDesc.length > 1 ? " / " + s.year : "");
+      line.textContent = isFullRange()
+        ? shaded + " counties with a CBV for " + forSel
+        : shaded + " counties with CBV " + usdShort(rlo) + "–" + usdShort(rhi) +
+          " for " + forSel;
     }
     var note = document.getElementById("note");
     if (!hasData) {
@@ -393,6 +460,13 @@ var DATA = __PAYLOAD__;
   [fUse, fPractice, fOrganic, fYear].forEach(function (el) {
     el.addEventListener("change", refresh);
   });
+  [rMin, rMax].forEach(function (r) {
+    r.addEventListener("input", function () { updateRange(); refresh(); });
+  });
+  document.getElementById("rReset").addEventListener("click", function () {
+    rMin.value = RLO; rMax.value = RHI; updateRange(); refresh();
+  });
+  updateRange();
   refresh();
 })();
 </script>

@@ -2,6 +2,13 @@
 # data/cache/ holds the 352 MB+ ADM file and downloaded brochures — MUST stay out.
 data/cache/
 
+# The WORKING catalog is >1 GB once src/prfbulk.py loads RMA's national rainfall-index
+# file (~11.5M rows the app never reads) — far past GitHub's 100 MB file limit.
+# The app ships data/catalog_app.db instead (scripts/build_app_db.py), which is committed.
+data/catalog.db
+data/catalog.db-wal
+data/catalog.db-shm
+
 # --- Secrets ---
 .streamlit/secrets.toml
 
@@ -21,7 +28,7 @@ output/*.xlsx
 output/~$*.xlsx
 
 # --- What we DO commit (documented, do not add ignores for these) ---
-# data/catalog.db          (6 MB — the catalog, bundled for the app)
+# data/catalog_app.db      (slim app DB — built by scripts/build_app_db.py)
 # data/assets/             (d3 / topojson / us-atlas / verify screenshots)
 # data/seed/               (curated CSV seeds)
 # output/product_map.html  (optional prebuilt map)

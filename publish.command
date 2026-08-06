@@ -60,6 +60,10 @@ step "Regenerating interactive map + Excel workbook from catalog.db…"
 $PY -m src.webmap
 $PY -m src.refresh --export-only
 
+# The working catalog is >1 GB (raw PRF index rows); the app ships a slim copy.
+step "Building the slim app database…"
+$PY scripts/build_app_db.py
+
 # 3. safety gate ----------------------------------------------------------
 if [ "$RUNTESTS" -eq 1 ]; then
   step "Running test suite…"
@@ -72,6 +76,24 @@ git add -A
 # Guard: never let a secret or the huge ADM cache slip in.
 if git diff --cached --name-only | grep -Eq 'secrets\.toml$|^data/cache/'; then
   echo "REFUSING: a secret or data/cache path is staged. Check .gitignore."
+  git reset -q
+  exit 1
+fi
+# Guard: GitHub hard-rejects files >100 MB. Catch an oversized blob BEFORE committing,
+# since a committed 1 GB DB is painful to excise from history afterwards.
+# NOTE: every branch must end truthy — `set -e` is active, and a `[ ] && echo` that
+# tests false makes the whole command substitution exit non-zero, killing the script.
+BIG=$(git diff --cached --name-only --diff-filter=ACM | while read -r f; do
+        if [ -f "$f" ]; then
+          sz=$(stat -f%z "$f" 2>/dev/null || echo 0)
+          if [ "$sz" -gt 95000000 ]; then
+            echo "$f ($((sz/1000000)) MB)"
+          fi
+        fi
+      done || true)
+if [ -n "$BIG" ]; then
+  echo "REFUSING: staged file(s) exceed GitHub's 100 MB limit:"
+  echo "$BIG"
   git reset -q
   exit 1
 fi

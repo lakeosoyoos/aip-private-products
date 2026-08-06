@@ -129,6 +129,92 @@ CREATE TABLE IF NOT EXISTS sob_sales (
     PRIMARY KEY (year, state, county_fips, crop, plan_code)
 );
 
+-- PRF optimizer sweep results (grid grain): the BEST allocations found by src/prfopt.py's
+-- 59,536-policy enumeration, summarized per grid x use x coverage level. Metrics are stored
+-- NORMALIZED per $1 of annual protection (win rate is scale-invariant; $/acre = value x
+-- county CBV x coverage x productivity, applied at display time), so one grid row serves
+-- every county the grid touches. combos/props are JSON. Populated by src/prfsweep.py.
+CREATE TABLE IF NOT EXISTS prf_opt_best (
+    grid_id         INTEGER NOT NULL,
+    intended_use    TEXT NOT NULL,
+    coverage_level  REAL NOT NULL,
+    year_min        INTEGER, year_max INTEGER,
+    n_policies      INTEGER,
+    best_win_rate   REAL,               -- max win rate over all policies
+    best_win_combo  TEXT, best_win_props TEXT, best_win_avg_net REAL,
+    best_net        REAL,               -- max average net return (per $1 protection)
+    best_net_combo  TEXT, best_net_props TEXT, best_net_win_rate REAL,
+    median_net      REAL,
+    pct_positive    REAL,               -- share of policies with positive avg net
+    top_json        TEXT,               -- top-N policies by each metric, JSON
+    source          TEXT, fetched_at TEXT,
+    PRIMARY KEY (grid_id, intended_use, coverage_level)
+);
+
+-- Which counties each PRF grid touches (a grid can span several counties and vice versa).
+-- From the PrfWebApi GetCountiesAndStatesFromGridId call or the ADM grid-keyed records.
+CREATE TABLE IF NOT EXISTS prf_grid_county (
+    grid_id         INTEGER NOT NULL,
+    state           TEXT NOT NULL,
+    county_fips     TEXT NOT NULL,
+    county_name     TEXT,
+    source          TEXT,
+    PRIMARY KEY (grid_id, county_fips)
+);
+
+-- PRF historical rainfall index values (grid grain): one row per grid x sample year x
+-- two-month index interval. index_value is the index as a decimal "percent of normal"
+-- (1.000 = normal rainfall; the support tool displays 0.798 as 79.8%). An indemnity
+-- triggers when the final index falls below the coverage level (e.g. < 0.90).
+-- Populated by src/prfdata.py from RMA's PRF support tool web API
+-- (public-rma.fpac.usda.gov/apps/PrfWebApi, PrfExternalIndexes/GetIndexValues); data run
+-- 1948 -> present. Interval codes are the ADM A00480 abbreviations (JAN-FEB ... NOV-DEC).
+CREATE TABLE IF NOT EXISTS prf_grid_index (
+    grid_id         INTEGER NOT NULL,
+    year            INTEGER NOT NULL,
+    interval_code   TEXT NOT NULL,     -- 'JAN-FEB' ... 'NOV-DEC' (11 overlapping intervals)
+    index_value     REAL NOT NULL,     -- percent of normal, decimal (0.798 = 79.8%)
+    source          TEXT,              -- e.g. prfwebapi
+    fetched_at      TEXT,
+    PRIMARY KEY (grid_id, year, interval_code)
+);
+
+-- PRF premium rates (grid grain): one row per grid x reinsurance year x intended use x
+-- interval x coverage level. premium_rate is the unloaded rate applied to policy
+-- protection (total premium = protection x rate). Populated by src/prfdata.py from the
+-- PRF support tool web API (PrfExternalIntervalCodes/GetValidIntervalCodes); the same
+-- numbers live in the ADM as A01130 Area Coverage Level (rc 05, keyed by grid) joined to
+-- A01135 Area Rate via Area Rate ID (verified to match exactly for grid 27663).
+CREATE TABLE IF NOT EXISTS prf_grid_rate (
+    grid_id         INTEGER NOT NULL,
+    year            INTEGER NOT NULL,  -- reinsurance year the rate applies to
+    intended_use    TEXT NOT NULL,     -- Grazing | Haying | Haying-Irrigated
+    interval_code   TEXT NOT NULL,     -- 'JAN-FEB' ... 'NOV-DEC'
+    coverage_level  REAL NOT NULL,     -- 0.70 | 0.75 | 0.80 | 0.85 | 0.90
+    premium_rate    REAL NOT NULL,
+    source          TEXT,              -- e.g. prfwebapi_2026
+    fetched_at      TEXT,
+    PRIMARY KEY (grid_id, year, intended_use, interval_code, coverage_level)
+);
+
+-- Per-grid fingerprint of the prf_grid_index scoring window (2006-2024), so the monthly
+-- update can re-score ONLY the grids whose index history actually moved. Written by
+-- src/prfbulk.py after each bulk load / successful sweep; compared by prfbulk.changed_grids().
+CREATE TABLE IF NOT EXISTS prf_index_hash (
+    grid_id         INTEGER PRIMARY KEY,
+    window_hash     TEXT,
+    updated_at      TEXT
+);
+
+-- PRF premium subsidy schedule (national, plan 13): subsidy percent by coverage level.
+-- From ADM A00070 Subsidy Percent (record category 04, plan 13, RY2026), cross-checked
+-- against the support tool's SubsidyLevel. 0.65 is the CAT level (100% subsidized).
+CREATE TABLE IF NOT EXISTS prf_subsidy (
+    coverage_level  REAL PRIMARY KEY,
+    subsidy_pct     REAL NOT NULL,
+    source          TEXT
+);
+
 CREATE TABLE IF NOT EXISTS documents (
     doc_id          INTEGER PRIMARY KEY AUTOINCREMENT,
     product_id      INTEGER,

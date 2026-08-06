@@ -16,6 +16,7 @@ import streamlit as st
 
 from src import config
 from src.prfmap import build_prf_payload, render_prf_html
+from src.prfoptmap import build_opt_payload, render_opt_html
 from src.stack import FEDERAL_BANDS, LAYERS, classified_products
 from src.webapp import auth, data
 from src.webmap import build_payload, ensure_assets, render_html
@@ -26,9 +27,15 @@ st.set_page_config(
     layout="wide",
 )
 
-# DB_PATH is config.DB_PATH in production; AIP_DB_PATH lets a verification run
-# point the app at a copy with synthetic rows without touching the real catalog.
-DB_PATH = os.environ.get("AIP_DB_PATH") or config.DB_PATH
+# Which catalog the app reads, in priority order:
+#   1. AIP_DB_PATH        — a verification run pointing at a copy with synthetic rows
+#   2. data/catalog_app.db — the SHIPPED slim DB (scripts/build_app_db.py). The working
+#      catalog carries ~11.5M raw PRF index rows the app never queries and exceeds 1 GB,
+#      far past GitHub's 100 MB file limit, so only this trimmed copy is committed.
+#   3. config.DB_PATH      — the full working catalog (local development)
+_APP_DB = config.DATA_DIR / "catalog_app.db"
+DB_PATH = (os.environ.get("AIP_DB_PATH")
+           or (str(_APP_DB) if _APP_DB.exists() else config.DB_PATH))
 
 
 # --------------------------------------------------------------------- gate
@@ -84,9 +91,11 @@ def _render_ver() -> float:
     would serve the old map HTML on a reused container. Git checkout stamps a fresh mtime each
     deploy, so this busts the cache whenever the map code changes."""
     import src.prfmap
+    import src.prfoptmap
     import src.webmap
     try:
-        return max(os.path.getmtime(m.__file__) for m in (src.prfmap, src.webmap))
+        return max(os.path.getmtime(m.__file__)
+                   for m in (src.prfmap, src.prfoptmap, src.webmap))
     except OSError:
         return 0.0
 
@@ -121,6 +130,29 @@ def _prf_html(_mtime: float, _ver: float) -> str:
     payload = build_prf_payload(_conn())
     atlas = json.loads(assets["counties-10m.json"])
     return render_prf_html(
+        payload,
+        d3_js=assets["d3.v7.min.js"],
+        topojson_js=assets["topojson-client.min.js"],
+        atlas=atlas,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _prf_opt_row_count(_mtime: float) -> int:
+    """Rows in prf_opt_best; 0 (not an error) when empty or the table is missing."""
+    try:
+        return _conn().execute("SELECT COUNT(*) FROM prf_opt_best").fetchone()[0]
+    except Exception:
+        return 0
+
+
+@st.cache_data(show_spinner="Building the PRF Optimizer map…")
+def _prf_opt_html(_mtime: float, _ver: float) -> str:
+    """Self-contained PRF Optimizer choropleth. Cached on DB mtime + render-code version."""
+    assets = ensure_assets()
+    payload = build_opt_payload(_conn())
+    atlas = json.loads(assets["counties-10m.json"])
+    return render_opt_html(
         payload,
         d3_js=assets["d3.v7.min.js"],
         topojson_js=assets["topojson-client.min.js"],
@@ -196,6 +228,29 @@ def _tab_prf(mtime: float) -> None:
         )
         return
     st.components.v1.html(_prf_html(mtime, _render_ver()), height=820, scrolling=True)
+
+
+def _tab_prf_opt(mtime: float) -> None:
+    st.subheader("PRF Optimizer — best interval allocation by county")
+    st.caption(
+        "For every PRF grid, all **59,536 valid interval-allocation policies** "
+        "(2–5 non-adjacent two-month intervals, 5% steps, 10–60% each, summing "
+        "to 100%) are simulated over the 2006–2024 RMA rainfall-index history "
+        "at 90% coverage. Shading = the **best achievable metric among the "
+        "county's grids** — toggle between best win rate (share of years with "
+        "positive net) and best average net return, which is **per \\$1 of "
+        "protection** (multiply by CBV × 0.90 × productivity factor for "
+        "\\$/acre). Hover a county for each grid's winning allocations; the "
+        "range slider filters counties by metric value."
+    )
+    if _prf_opt_row_count(mtime) == 0:
+        st.info(
+            "Optimizer sweep not run yet — the `prf_opt_best` table is empty. "
+            "Run the sweep to populate per-grid best allocations; the heat map "
+            "will appear here (and shade progressively) as results land."
+        )
+        return
+    st.components.v1.html(_prf_opt_html(mtime, _render_ver()), height=820, scrolling=True)
 
 
 def _tab_products(mtime: float) -> None:
@@ -432,18 +487,21 @@ def main() -> None:
             st.rerun()
 
     mtime = _db_mtime()
-    tabs = st.tabs(["Map", "PRF", "Products", "Stack", "SERFF Filings", "About"])
+    tabs = st.tabs(["Map", "PRF", "PRF Optimizer", "Products", "Stack",
+                    "SERFF Filings", "About"])
     with tabs[0]:
         _tab_map(mtime)
     with tabs[1]:
         _tab_prf(mtime)
     with tabs[2]:
-        _tab_products(mtime)
+        _tab_prf_opt(mtime)
     with tabs[3]:
-        _tab_stack(mtime)
+        _tab_products(mtime)
     with tabs[4]:
-        _tab_serff(mtime)
+        _tab_stack(mtime)
     with tabs[5]:
+        _tab_serff(mtime)
+    with tabs[6]:
         _tab_about(mtime)
 
 

@@ -172,13 +172,19 @@ _TEMPLATE = r"""<!DOCTYPE html>
   /* CBV range slider (dual-thumb) — filters which counties are shaded by $/acre. */
   .rangebar {
     display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
-    padding: 9px 18px; border-bottom: 1px solid var(--grid); background: var(--surface);
+    padding: 24px 18px 9px; border-bottom: 1px solid var(--grid); background: var(--surface);
   }
   .rangebar > label { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
   .dual { position: relative; flex: 1; min-width: 220px; max-width: 520px; height: 26px; }
   .dual .track { position: absolute; top: 11px; left: 0; right: 0; height: 4px;
     background: var(--grid); border-radius: 3px; }
   .dual .fill { position: absolute; top: 11px; height: 4px; background: #41ab5d; border-radius: 3px; }
+  .dual .bubble {
+    position: absolute; top: -16px; transform: translateX(-50%);
+    font-size: 11px; font-variant-numeric: tabular-nums; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--baseline); border-radius: 4px;
+    padding: 0 4px; line-height: 15px; white-space: nowrap; pointer-events: none;
+  }
   .dual input[type=range] {
     position: absolute; top: 0; left: 0; width: 100%; height: 26px; margin: 0;
     -webkit-appearance: none; appearance: none; background: transparent; pointer-events: none;
@@ -251,6 +257,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div class="dual">
     <div class="track"></div>
     <div class="fill" id="rFill"></div>
+    <div class="bubble" id="rBubbleLo"></div>
+    <div class="bubble" id="rBubbleHi"></div>
     <input type="range" id="rMin">
     <input type="range" id="rMax">
   </div>
@@ -353,7 +361,9 @@ var DATA = __PAYLOAD__;
       rMax = document.getElementById("rMax"),
       rFill = document.getElementById("rFill"),
       rReadout = document.getElementById("rReadout"),
-      rBar = document.getElementById("rangebar");
+      rBar = document.getElementById("rangebar"),
+      bubbleLo = document.getElementById("rBubbleLo"),
+      bubbleHi = document.getElementById("rBubbleHi");
   var RLO = Math.floor(lo), RHI = Math.ceil(hi);
   if (RHI <= RLO) RHI = RLO + 1;
   [rMin, rMax].forEach(function (r) { r.min = RLO; r.max = RHI; r.step = 1; });
@@ -367,6 +377,11 @@ var DATA = __PAYLOAD__;
     var a = (rangeLo() - RLO) / span, b = (rangeHi() - RLO) / span;
     rFill.style.left = (a * 100) + "%";
     rFill.style.width = ((b - a) * 100) + "%";
+    // Value label above each thumb, offset for the 16px thumb width so it tracks the handle.
+    bubbleLo.textContent = usdShort(rangeLo());
+    bubbleLo.style.left = "calc(" + (a * 100) + "% - " + (a * 16 - 8) + "px)";
+    bubbleHi.textContent = usdShort(rangeHi());
+    bubbleHi.style.left = "calc(" + (b * 100) + "% - " + (b * 16 - 8) + "px)";
     rReadout.textContent = usdShort(rangeLo()) + " – " + usdShort(rangeHi()) + "/ac";
   }
 

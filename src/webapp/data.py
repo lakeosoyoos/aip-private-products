@@ -17,9 +17,17 @@ from ..stack import classified_products
 
 
 def open_ro(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Open the catalog strictly read-only (immutable) via a sqlite URI."""
+    """Open the catalog strictly read-only (immutable) via a sqlite URI.
+
+    check_same_thread=False is required because the app caches this one connection with
+    @st.cache_resource and Streamlit executes reruns (and different sessions) on different
+    threads — the default check_same_thread=True raises sqlite3.ProgrammingError when the cached
+    connection is used from another thread. Safe here: the DB is opened read-only + immutable, and
+    SQLite's default serialized threading mode allows concurrent reads on one connection.
+    """
     dbp = Path(db_path or config.DB_PATH)
-    conn = sqlite3.connect(f"file:{dbp}?mode=ro&immutable=1", uri=True)
+    conn = sqlite3.connect(
+        f"file:{dbp}?mode=ro&immutable=1", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 

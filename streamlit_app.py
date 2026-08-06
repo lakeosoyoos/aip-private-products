@@ -78,9 +78,22 @@ def _db_mtime() -> float:
         return 0.0
 
 
+def _render_ver() -> float:
+    """Cache-buster for the embedded maps: newest mtime of the render modules. A code-only
+    change (e.g. the PRF slider) doesn't touch the DB, so without this the DB-mtime cache key
+    would serve the old map HTML on a reused container. Git checkout stamps a fresh mtime each
+    deploy, so this busts the cache whenever the map code changes."""
+    import src.prfmap
+    import src.webmap
+    try:
+        return max(os.path.getmtime(m.__file__) for m in (src.prfmap, src.webmap))
+    except OSError:
+        return 0.0
+
+
 @st.cache_data(show_spinner="Building the interactive map…")
-def _map_html(_mtime: float) -> str:
-    """Full offline map HTML, generated in-memory. Cached on the DB mtime."""
+def _map_html(_mtime: float, _ver: float) -> str:
+    """Full offline map HTML, generated in-memory. Cached on DB mtime + render-code version."""
     assets = ensure_assets()
     payload = build_payload(_conn())
     atlas = json.loads(assets["counties-10m.json"])
@@ -102,8 +115,8 @@ def _prf_row_count(_mtime: float) -> int:
 
 
 @st.cache_data(show_spinner="Building the PRF heat map…")
-def _prf_html(_mtime: float) -> str:
-    """Self-contained PRF County Base Value choropleth. Cached on the DB mtime."""
+def _prf_html(_mtime: float, _ver: float) -> str:
+    """Self-contained PRF choropleth. Cached on DB mtime + render-code version."""
     assets = ensure_assets()
     payload = build_prf_payload(_conn())
     atlas = json.loads(assets["counties-10m.json"])
@@ -161,7 +174,7 @@ def _tab_map(mtime: float) -> None:
         "subsidy filters. Private products shade at state grain (statewide "
         "filings); federal products at ADM county grain where loaded."
     )
-    st.components.v1.html(_map_html(mtime), height=820, scrolling=True)
+    st.components.v1.html(_map_html(mtime, _render_ver()), height=820, scrolling=True)
 
 
 def _tab_prf(mtime: float) -> None:
@@ -182,7 +195,7 @@ def _tab_prf(mtime: float) -> None:
             "once values are loaded."
         )
         return
-    st.components.v1.html(_prf_html(mtime), height=820, scrolling=True)
+    st.components.v1.html(_prf_html(mtime, _render_ver()), height=820, scrolling=True)
 
 
 def _tab_products(mtime: float) -> None:

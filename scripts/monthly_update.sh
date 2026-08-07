@@ -70,12 +70,28 @@ fi
 #    Replaces the old per-state `--force` re-sweep, which refetched every grid from the
 #    PrfWebApi (~6 requests x 13,462 grids) and rescored the whole country every month.
 #    prf_index_hash makes the no-change case a few seconds instead of hours.
+#    ALL 15 use x coverage combos are shipped, so all 15 must be re-scored — otherwise
+#    fourteen of them silently drift out of step with the one that updated.
+#    prf_index_hash is keyed by GRID ONLY, so each combo must run with --keep-hashes:
+#    letting the first combo stamp the hashes would make combos 2..15 see "nothing
+#    changed" and skip everything while still reporting success. Hashes are stamped
+#    once, after the loop, with `prfbulk --hashes`.
 NGRIDS=$(sqlite3 data/catalog.db "SELECT COUNT(*) FROM prf_grid_county;" 2>/dev/null)
 if [ "${NGRIDS:-0}" -gt 0 ]; then
-  say "[3/4] PRF re-score: bulk, changed grids only"
-  $PY -u -m src.prfsweep --bulk --changed-only --force --use Grazing --coverage 0.90 \
-      --jobs 4 >>"$LOG" 2>&1 \
-    || say "WARN: bulk re-score exited nonzero (resumable; continuing)"
+  say "[3/4] PRF re-score: bulk, changed grids only, all 15 use x coverage combos"
+  rescore_rc=0
+  for USE in Grazing Haying Haying-Irrigated; do
+    for COV in 0.70 0.75 0.80 0.85 0.90; do
+      say "      re-score $USE @ $COV"
+      $PY -u -m src.prfsweep --bulk --changed-only --force --keep-hashes \
+          --use "$USE" --coverage "$COV" --jobs 4 >>"$LOG" 2>&1 \
+        || { rescore_rc=1; say "WARN: $USE @ $COV exited nonzero (resumable; continuing)"; }
+    done
+  done
+  # Stamp the window hashes once, now that every combo has seen this month's changes.
+  $PY -m src.prfbulk --hashes >>"$LOG" 2>&1 \
+    || say "WARN: hash stamp exited nonzero — next run re-scores the same grids (safe)"
+  [ "$rescore_rc" = 0 ] && say "      all 15 combos re-scored" || say "      some combos warned (see log)"
 else
   say "[3/4] prf_grid_county empty — run 'python -m src.prfbulk --indices --rates' first"
 fi

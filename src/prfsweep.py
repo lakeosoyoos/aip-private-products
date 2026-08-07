@@ -458,6 +458,7 @@ def _worker_score(grid_id: int):
 def sweep_bulk(conn, state: str | None = None, use: str = "Grazing",
                coverage: float = 0.90, limit: int | None = None,
                force: bool = False, changed_only: bool = False, jobs: int = 1,
+               keep_hashes: bool = False,
                db_path=None, cfg: config.Config | None = None, log=print) -> dict:
     """Score grids straight from the DB — zero network calls.
 
@@ -560,7 +561,12 @@ def sweep_bulk(conn, state: str | None = None, use: str = "Grazing",
             if i % 250 == 0 or i == len(todo):
                 _progress(i)
 
-    if scored:
+    # Hashes are keyed by GRID ONLY (no use/coverage), so writing them here would tell
+    # the NEXT combo in a multi-combo run that nothing changed — silently skipping 14 of
+    # the 15 use x coverage combos while looking successful. keep_hashes lets a caller
+    # sweep every combo off one changed-grid list, then stamp the hashes once at the end
+    # (`python -m src.prfbulk --hashes`). See scripts/monthly_update.sh step 3.
+    if scored and not keep_hashes:
         prfbulk.update_hashes(conn, scored)
 
     return {"state": scope, "use": use, "coverage": coverage,
@@ -585,6 +591,10 @@ def main(argv=None) -> int:
                     help="score from the loaded national tables; NO network "
                          "calls (run `python -m src.prfbulk` first). Omit "
                          "--state to sweep all of CONUS.")
+    ap.add_argument("--keep-hashes", action="store_true",
+                    help="bulk mode: do NOT stamp prf_index_hash after scoring. Use when "
+                         "sweeping several use x coverage combos off one changed-grid "
+                         "list; stamp once at the end with `python -m src.prfbulk --hashes`.")
     ap.add_argument("--changed-only", action="store_true",
                     help="bulk mode: only grids whose 2006-2024 index window "
                          "changed since the last run (the monthly path)")
@@ -620,6 +630,7 @@ def main(argv=None) -> int:
             res = sweep_bulk(conn, state=args.state, use=args.use,
                              coverage=args.coverage, limit=args.limit,
                              force=args.force, changed_only=args.changed_only,
+                             keep_hashes=args.keep_hashes,
                              jobs=args.jobs, db_path=args.db, log=say)
         else:
             res = sweep(conn, state=args.state, use=args.use,

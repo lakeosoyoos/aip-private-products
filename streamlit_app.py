@@ -78,6 +78,34 @@ def _conn():
     return data.open_ro(DB_PATH)
 
 
+@st.cache_resource
+def _warm_matplotlib_fonts():
+    """Build matplotlib's font cache in the background, once per process.
+
+    On a cold Streamlit Cloud container the first `import matplotlib.pyplot`
+    spends ~60 s building the font cache — and without this it lands on
+    whoever opens the LRP tab first, where it looks like a hang. Kicking it
+    off on a daemon thread right after the passcode gate means it is usually
+    finished (or well underway) by the time anyone reaches LRP, and it never
+    blocks the gate, the maps, or any other tab.
+
+    Failures are swallowed on purpose: this is pure warm-up: if matplotlib is
+    missing or errors here, _tab_lrp still surfaces the real error properly.
+    """
+    import threading
+
+    def _warm():
+        try:
+            os.environ.setdefault("MPLBACKEND", "Agg")
+            import matplotlib.pyplot  # noqa: F401  (import IS the work)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_warm, name="mpl-font-warm", daemon=True)
+    t.start()
+    return t
+
+
 def _db_mtime() -> float:
     try:
         return os.path.getmtime(DB_PATH)
@@ -381,9 +409,9 @@ def _tab_serff(mtime: float) -> None:
     df = _serff_df(mtime)
     st.subheader("SERFF filings")
     st.caption(
-        f"{len(df)} filing-grain regulatory records for 5 states (IA/IL/NE/MN/IN) — "
-        "one row per state rate/form filing, NOT a product menu. An AIP re-files "
-        "yearly, so filings vastly outnumber products."
+        f"{len(df):,} filing-grain regulatory records across "
+        f"{df['state'].nunique()} states — one row per state rate/form filing, NOT a "
+        "product menu. An AIP re-files yearly, so filings vastly outnumber products."
     )
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -510,6 +538,10 @@ def _tab_lrp() -> None:
 def main() -> None:
     if not _passcode_gate():
         return
+
+    # Authenticated: start matplotlib's font-cache build in the background so the
+    # LRP tab does not eat a ~60 s cold-container stall on first open.
+    _warm_matplotlib_fonts()
 
     st.title("🌾 AIP Crop-Insurance Catalog")
     with st.sidebar:

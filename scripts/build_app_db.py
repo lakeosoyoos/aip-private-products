@@ -35,7 +35,11 @@ DROP_TABLES = [
 # and a local working copy can still be used interchangeably). prf_opt_best.top_json holds
 # the top-10 leaderboards per grid — ~37 MB across 13,462 grids — while the map only needs
 # the two winning policies already stored in their own columns.
-BLANK_COLUMNS = [("prf_opt_best", "top_json")]
+BLANK_COLUMNS = [
+    ("prf_opt_best", "top_json"),      # ~37 MB of top-10 leaderboards; map shows only the 2 winners
+    ("serff_filings", "raw"),          # ~6 MB of original portal JSON; the table's own columns ship
+    ("products", "raw"),               # original scraped blob; provenance lives in source_url
+]
 
 # Tables the app genuinely reads — refuse to ship a DB missing any of them.
 REQUIRED = [

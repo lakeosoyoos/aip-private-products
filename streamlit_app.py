@@ -474,6 +474,38 @@ def _tab_about(mtime: float) -> None:
     )
 
 
+# ------------------------------------------------------------------ LRP tab
+def _tab_lrp() -> None:
+    """Livestock Risk Protection savings signal (lrp_page.render()).
+
+    The import is deliberately LAZY — inside the tab body, not at module
+    scope. lrp_page pulls in matplotlib/scipy/seaborn via lrp_signal, which
+    costs ~1.9 s on top of this app's ~1.8 s module import (measured, warm
+    disk), and matplotlib additionally builds its font cache on a cold
+    container (a one-off ~60 s). At module scope every visitor — including
+    anyone who never gets past the passcode gate — would pay that before the
+    gate could even render. Deferred here, the cost is paid once per process
+    on the first authenticated render and is free on every later rerun
+    (sys.modules cache).
+
+    MPLBACKEND is pinned to Agg before the import: lrp_signal imports
+    matplotlib.pyplot at module scope and Streamlit runs scripts off the main
+    thread, so the interactive default backend (macosx on a dev Mac) would
+    warn or fail. Streamlit Cloud picks Agg on its own; this makes local and
+    deployed behaviour identical. Set here rather than in lrp_signal.py,
+    which is vendored verbatim.
+    """
+    os.environ.setdefault("MPLBACKEND", "Agg")
+    try:
+        import lrp_page
+    except Exception as exc:  # missing LRP-only dep, etc.
+        st.error(f"LRP Signal unavailable — {type(exc).__name__}: {exc}")
+        st.caption("Needs scipy, matplotlib, seaborn and tabulate "
+                   "(see requirements.txt).")
+        return
+    lrp_page.render()
+
+
 # -------------------------------------------------------------------- main
 def main() -> None:
     if not _passcode_gate():
@@ -488,7 +520,7 @@ def main() -> None:
 
     mtime = _db_mtime()
     tabs = st.tabs(["Map", "PRF", "PRF Optimizer", "Products", "Stack",
-                    "SERFF Filings", "About"])
+                    "SERFF Filings", "🐂 LRP Signal", "About"])
     with tabs[0]:
         _tab_map(mtime)
     with tabs[1]:
@@ -502,6 +534,8 @@ def main() -> None:
     with tabs[5]:
         _tab_serff(mtime)
     with tabs[6]:
+        _tab_lrp()
+    with tabs[7]:
         _tab_about(mtime)
 
 

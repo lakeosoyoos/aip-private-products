@@ -27,7 +27,19 @@ __pycache__/
 output/*.xlsx
 output/~$*.xlsx
 
+# --- LRP Signal (lrp_signal.py writes next to itself) ---
+# HTTP cache of RMA rate files and CME quotes — re-fetchable, auto-created.
+lrp_cache/
+# Artifacts from CLI runs (python lrp_signal.py ...) — the Streamlit tab
+# renders in-memory and writes neither of these.
+lrp_signal_*.csv
+lrp_signal_*.png
+
 # --- What we DO commit (documented, do not add ignores for these) ---
+# lrp_gap_history.csv      (LRP richness baseline — immutable append-only
+#                           snapshot store; the page self-backfills on first
+#                           load, but committing it preserves real observed
+#                           history across deploys. NOT ignored, on purpose.)
 # data/catalog_app.db      (slim app DB — built by scripts/build_app_db.py)
 # data/assets/             (d3 / topojson / us-atlas / verify screenshots)
 # data/seed/               (curated CSV seeds)

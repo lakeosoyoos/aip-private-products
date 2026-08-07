@@ -7,3 +7,17 @@
 streamlit==1.60.0
 pandas>=2.2
 openpyxl>=3.1
+
+# --- LRP Signal tab only (lrp_signal.py / lrp_page.py) -------------------
+# The "🐂 LRP Signal" tab is the ONLY consumer of these; nothing else in the
+# app imports them, and streamlit_app.py imports lrp_page lazily inside the
+# tab body so the cold-start cost lands after the passcode gate, not before
+# it. They add ~140 MB to the installed environment (scipy ~92 MB,
+# matplotlib ~26 MB, fonttools ~17 MB) and ~20 s to `pip install`; on a cold
+# container matplotlib also builds its font cache once (~60 s) the first time
+# the tab is opened. numpy and requests — also required by lrp_signal — come
+# in transitively via pandas/streamlit and scipy.
+scipy>=1.10
+matplotlib>=3.7
+seaborn>=0.13
+tabulate>=0.9

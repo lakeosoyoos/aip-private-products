@@ -476,6 +476,14 @@ def sweep_bulk(conn, state: str | None = None, use: str = "Grazing",
     prf_index_hash, which is what makes the NEXT --changed-only run cheap.
     """
     cfg = cfg or config.load()
+    # The parent commits once per grid. Under the default rollback journal with
+    # synchronous=FULL that is a full fsync against a >1 GB file EVERY grid, and the
+    # cost climbs as prf_opt_best grows -- measured 47 -> 80 min per 13,462-grid combo
+    # over the first five. WAL (set on the file) plus NORMAL here keeps commits cheap
+    # and flat. NORMAL only risks the last commits on an OS crash/power loss, never on
+    # a process kill, and the sweep is resumable either way.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     grids = bulk_grids(conn, state)
     scope = state or "CONUS"
     state_of = bulk_grid_states(conn, state)

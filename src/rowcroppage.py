@@ -539,7 +539,8 @@ def render() -> None:
     except Exception as exc:                     # never take the tab down
         st.error(f"Could not build the row-crop opportunity map: {exc}")
         return
-    st.components.v1.html(html, height=880, scrolling=False)
+    # See the note in src/drppage.py: st.components.v1.html is past its removal date.
+    st.iframe(html, height=880)
 
 
 # The template uses __TOKENS__ (not str.format) so the JS braces stay literal.

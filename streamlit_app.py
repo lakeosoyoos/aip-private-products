@@ -275,7 +275,10 @@ def _tab_map(mtime: float) -> None:
         "subsidy filters. Private products shade at state grain (statewide "
         "filings); federal products at ADM county grain where loaded."
     )
-    st.components.v1.html(_map_html(mtime, _render_ver()), height=820, scrolling=True)
+    # st.iframe supersedes st.components.v1.html (removal was slated after 2026-06-01).
+    # It auto-detects an HTML string and iframes it; `scrolling` no longer exists, and
+    # the iframe scrolls its own document by default, which is what scrolling=True did.
+    st.iframe(_map_html(mtime, _render_ver()), height=820)
 
 
 def _tab_prf(mtime: float) -> None:
@@ -328,8 +331,7 @@ def _tab_prf(mtime: float) -> None:
             "return-per-\\$1 and return-per-acre views will render neutral "
             "until the sweep is run."
         )
-    st.components.v1.html(_prf_page_html(mtime, _render_ver(), _prf_seed_mtime()),
-                          height=860, scrolling=True)
+    st.iframe(_prf_page_html(mtime, _render_ver(), _prf_seed_mtime()), height=860)
 
 
 def _tab_products(mtime: float) -> None:
@@ -377,7 +379,7 @@ def _tab_products(mtime: float) -> None:
     ]]
     st.dataframe(
         view,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "doc_url": st.column_config.LinkColumn("doc / source", display_text="open"),
@@ -417,7 +419,7 @@ def _tab_stack(mtime: float) -> None:
             "# products": sum(1 for p in prods if p["layer"] == key),
             "description": desc,
         })
-    st.dataframe(pd.DataFrame(layer_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(layer_rows), width='stretch', hide_index=True)
 
     # Part B — AIP x private-layer matrix
     st.markdown("#### B. Private layers by AIP")
@@ -434,7 +436,7 @@ def _tab_stack(mtime: float) -> None:
                            if p["aip_code"] == code and p["layer"] == layer)
             row[labels[layer]] = "; ".join(names) or "—"
         matrix.append(row)
-    st.dataframe(pd.DataFrame(matrix), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(matrix), width='stretch', hide_index=True)
 
     # Part C — federal band vs private analogs
     st.markdown("#### C. Federal band vs private analogs (the subsidy decision)")
@@ -450,7 +452,7 @@ def _tab_stack(mtime: float) -> None:
             "premium subsidy": sub,
             "private analogs (unsubsidized)": "; ".join(analogs) or "none cataloged",
         })
-    st.dataframe(pd.DataFrame(band_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(band_rows), width='stretch', hide_index=True)
     st.info(
         "A private analog listed against a federal band is an **unsubsidized** "
         "product marketed to play the same role or stack above it. The grower's "
@@ -490,7 +492,7 @@ def _tab_serff(mtime: float) -> None:
     st.markdown(f"**{len(view)}** of {len(df)} filings match.")
     st.dataframe(
         view,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "filing_url": st.column_config.LinkColumn("filing", display_text="open"),

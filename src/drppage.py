@@ -428,7 +428,11 @@ def render() -> None:
     except Exception as exc:                     # never take the tab down
         st.error(f"Could not build the DRP map: {exc}")
         return
-    st.components.v1.html(html, height=820, scrolling=False)
+    # st.iframe replaces st.components.v1.html, which was slated for removal after
+    # 2026-06-01. It auto-detects an HTML string and sandboxes it in an iframe, same as
+    # before. `scrolling` is gone from the signature; the page sizes itself to the frame,
+    # and letting an overflowing document scroll is better than clipping it.
+    st.iframe(html, height=820)
 
 
 # The template uses __TOKENS__ (not str.format) so the JS braces stay literal.

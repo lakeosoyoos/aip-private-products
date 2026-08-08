@@ -99,7 +99,7 @@ def render():
                                   key="lrp_vol")
         rate_pct = st.number_input("Risk-free rate %", 0.0, 10.0, 5.0, 0.25,
                                    key="lrp_rate")
-    if top5.button("🔄 Refresh", key="lrp_refresh", use_container_width=True):
+    if top5.button("🔄 Refresh", key="lrp_refresh", width='stretch'):
         _run_pipeline.clear()
         st.rerun()
 
@@ -179,7 +179,7 @@ def render():
                         if status == "expired" else None)
         fig = build_chart_figure(grid, commodity, spot, cme_source, head,
                                  banner=chart_banner)
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width='stretch')
         import matplotlib.pyplot as plt
         plt.close(fig)
 
@@ -193,7 +193,7 @@ def render():
         show = show[[c for c in cols if c in show.columns]]
         show = show.sort_values("gap", ascending=False)
         st.dataframe(
-            show, use_container_width=True, height=560, hide_index=True,
+            show, width='stretch', height=560, hide_index=True,
             column_config={
                 "weeks": st.column_config.NumberColumn("Tenor (w)"),
                 "coverage_pct": "Coverage",
@@ -305,7 +305,7 @@ def render():
                    "premium_cost", "Feasible", "achievable_ratio"]
         show_sz = show_sz[cols_sz]
         st.dataframe(
-            show_sz, use_container_width=True, height=560,
+            show_sz, width='stretch', height=560,
             hide_index=True,
             column_config={
                 "weeks": st.column_config.NumberColumn("Tenor (w)"),

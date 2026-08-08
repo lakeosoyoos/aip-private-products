@@ -677,12 +677,15 @@ BASIS_COVERAGE_LEVEL = 0.85
 
 # band (this module's vocabulary) -> basis_risk_county band variants, PREFERRED FIRST.
 # ECO95 leads ECO90 because 99.0% of RY2026 ECO acres elect the 95% trigger (see the docstring).
-# MCO and STAX map to nothing at all: that is the honest answer, not an oversight to be patched.
+# MCO maps to nothing at all: that is the honest answer, not an oversight to be patched.
+# STAX now HAS an estimator (a plain county revenue trigger, RMA 16-STAX-0021). Its rows only
+# appear once cotton is loaded into nass_county_yield and build_basis_risk.py is re-run; until
+# then a STAX county simply has no row and falls through to "unknown", which is correct.
 BASIS_BANDS: dict[str, tuple[str, ...]] = {
     "SCO": ("SCO86",),
     "ECO": ("ECO95", "ECO90"),
     "MCO": (),
-    "STAX": (),
+    "STAX": ("STAX90",),
 }
 
 # Why a band has no basis-risk estimate — shown on the page so "unknown" is never mistaken for
@@ -691,8 +694,15 @@ BASIS_BAND_NOTE: dict[str, str] = {
     "MCO": "MCO settles on a MARGIN (revenue less input costs) index. src/basisrisk.py models "
            "yield and revenue triggers only, so MCO's basis risk is not estimated anywhere in "
            "this project — not estimated to be low.",
-    "STAX": "STAX has no estimator in src/basisrisk.py. Its county revenue trigger is close "
-            "enough to SCO's that borrowing SCO's number would look reasonable and be made up.",
+    # NOT "no estimator" any more — that was true until cotton was loaded. The live caveat is
+    # different and easy to trip over: STAX90 and ECO90 share a 0.90 county trigger, and a
+    # miss rate depends ONLY on the trigger, so the two are identical by arithmetic. They
+    # differ in uncovered_share, because STAX's exit slides up to the producer's own coverage
+    # level (16-STAX-0021 s10(b)) rather than sitting at a fixed floor.
+    "STAX": "STAX90 and ECO90 share a 0.90 county trigger, so their miss rates are identical "
+            "by construction — do not read one as better than the other on that number. They "
+            "differ in how much of the band is left uncovered, because STAX's exit rises with "
+            "the producer's own coverage level.",
 }
 BASIS_CROP_NOTE = (
     "basis_risk_county covers Corn, Soybeans and Wheat — the crops with a long enough NASS "

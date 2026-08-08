@@ -456,7 +456,7 @@ def test_eco90_is_used_when_eco95_is_the_one_missing(conn):
     assert hit["variant"] == "ECO90" and hit["miss_rate"] == pytest.approx(0.44)
 
 
-def test_mco_and_stax_have_no_estimator_and_borrow_nobody_else_s(conn):
+def test_mco_has_no_estimator_and_borrows_nobody_else_s(conn):
     """MCO settles on a MARGIN index src/basisrisk.py does not model. Unknown, not SCO's number."""
     from src.rowcropopt import (
         BASIS_BAND_NOTE, basis_for_cell, basis_note_for, basis_variants, load_basis_risk,
@@ -465,11 +465,39 @@ def test_mco_and_stax_have_no_estimator_and_borrow_nobody_else_s(conn):
     _br(conn, band="ECO95", miss=0.18)
     conn.commit()
     index = load_basis_risk(conn)
-    for band in ("MCO", "STAX"):
-        assert basis_variants(band) == ()
-        assert basis_for_cell(index, "31041", "Corn", band) is None
-        assert band in BASIS_BAND_NOTE
-        assert "not estimated" in basis_note_for(band) or "no estimator" in basis_note_for(band)
+    assert basis_variants("MCO") == ()
+    assert basis_for_cell(index, "31041", "Corn", "MCO") is None
+    assert "MCO" in BASIS_BAND_NOTE
+    assert "not estimated" in basis_note_for("MCO") or "no estimator" in basis_note_for("MCO")
+
+
+def test_stax_now_has_an_estimator_but_still_never_borrows_another_band(conn):
+    """STAX gained an estimator when cotton was loaded — this test used to assert the opposite.
+
+    It maps to STAX90 and to nothing else. The failure mode it guards is unchanged: a STAX
+    county with no row of its own must stay UNKNOWN rather than quietly inheriting SCO's or
+    ECO's number, which would look reasonable and be made up.
+    """
+    from src.rowcropopt import basis_for_cell, basis_variants, load_basis_risk
+
+    assert basis_variants("STAX") == ("STAX90",)
+    _br(conn, band="SCO86", miss=0.40)
+    _br(conn, band="ECO90", miss=0.26)
+    conn.commit()
+    index = load_basis_risk(conn)
+    # SCO86 and ECO90 rows exist for this cell; STAX90 does not. Must be None, not borrowed.
+    assert basis_for_cell(index, "31041", "Corn", "STAX") is None
+
+
+def test_stax_note_does_not_claim_stax_is_better_than_eco90(conn):
+    """STAX90 and ECO90 share a 0.90 county trigger, and a miss rate depends only on the
+    trigger — so they are identical BY ARITHMETIC, not by coincidence. The note must say so,
+    or a reader will rank two bands on a number that cannot distinguish them."""
+    from src.rowcropopt import basis_note_for
+
+    note = basis_note_for("STAX").lower()
+    assert "eco90" in note
+    assert "identical" in note or "same" in note
 
 
 def test_a_crop_outside_corn_soy_wheat_is_unknown_not_defaulted(conn):

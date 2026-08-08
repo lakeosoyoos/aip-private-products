@@ -26,12 +26,21 @@ STATISTICCAT_DESC in YIELD, AREA HARVESTED
                             AREA HARVESTED is loaded because the aggregation-scaling
                             calibration (below) needs the ACRES behind each reporting unit.
 DOMAIN_DESC = TOTAL         drops the economic-class / area-operated breakouts.
-COMMODITY_DESC in CORN, SOYBEANS, WHEAT       row crops first, per the brief.
-UNIT_DESC in 'BU / ACRE', 'BU / NET PLANTED ACRE' (yield) and 'ACRES' (area)
-                            the first is per HARVESTED acre, the second includes abandonment.
-                            Both load; see nass_county_yield's comment for which is default.
-                            This also drops corn SILAGE (TONS / ACRE), which is not the
-                            insured grain crop.
+COMMODITY_DESC in CORN, SOYBEANS, WHEAT, COTTON
+                            The grain three, plus upland cotton — which is here because it is
+                            the crop STAX settles on, and STAX cannot be estimated without it.
+UNIT_DESC   PER CROP, from basisrisk.CROP_YIELD_UNIT / CROP_PLANTED_YIELD_UNIT, plus 'ACRES'
+                            for area. The harvested-acre unit is the default; the NET PLANTED
+                            variant includes abandonment and loads as the robustness check.
+                            THE UNIT IS NOT THE SAME FOR EVERY CROP and must never be
+                            hard-coded: corn, soybeans and wheat are BU / ACRE, COTTON IS
+                            LB / ACRE. Accepting a blanket set of units instead of a per-crop
+                            one is the one loading bug in this file that produces no error and
+                            no implausible number — the estimator detrends into a unitless
+                            ratio, so a 50x scale error leaves every CV and every probability
+                            bit-identical. See src/basisrisk.py, section "UNITS".
+                            The per-crop unit also drops corn SILAGE (TONS / ACRE), which is
+                            not the insured grain crop.
 AGG_LEVEL_DESC in COUNTY, AGRICULTURAL DISTRICT, STATE, NATIONAL
                             COUNTY is the series the endorsements settle on. The other three
                             are loaded because the model needs the farm/county variance ratio,
@@ -46,12 +55,21 @@ WHAT WE DROP, deliberately
 * Non-numeric VALUEs: '(D)' withheld-disclosure, '(NA)', '(X)', '(Z)'. Never coerced to zero —
   a suppressed year is a MISSING year, and a zero would read as a total crop failure.
 * Rows whose CLASS/PRACTICE grain we do not collapse: nothing is dropped here, it is stored.
+* PIMA cotton (CLASS_DESC='PIMA'). A different insured commodity from upland — ADM 0022
+  "Cotton Ex Long Staple" against upland's 0021 — and STAX does not cover it at all
+  (16-STAX-0021 §2(a): "the insured crop will be all upland cotton"). It has 10 counties with
+  a usable series, which supports nothing. Dropping it at load means `crop='Cotton'` in
+  nass_county_yield means UPLAND cotton and only upland cotton, so a query that forgets to
+  filter on class cannot silently blend two crops.
 
 NOT collapsed, on purpose: wheat has no single county series (WINTER / SPRING, (EXCL DURUM) /
 SPRING, DURUM / ALL CLASSES all appear, and which exists varies by county), and the Plains
 split NON-IRRIGATED into CONTINUOUS CROP vs FOLLOWING SUMMER FALLOW — an RMA practice split.
 Choosing one series per county is a modelling decision, so it happens downstream in
 scripts/analysis/build_basis_risk.py and is recorded in basis_risk_county.class_used.
+
+Cotton keeps CLASS_DESC='UPLAND' rather than being rewritten to 'ALL CLASSES': it is what NASS
+says, and cotton genuinely has no ALL CLASSES county series to be confused with.
 """
 from __future__ import annotations
 
@@ -60,18 +78,25 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..basisrisk import CROP_PLANTED_YIELD_UNIT, CROP_YIELD_UNIT
 from .base import Connector, ConnectorResult, Context
 
 INDEX_URL = "https://www.nass.usda.gov/datasets/"
 FILE_RE = re.compile(r"qs\.crops_(\d{8})\.txt\.gz")
 
 # NASS COMMODITY_DESC -> canonical catalog crop name (src/rowcrops.py spelling).
-COMMODITIES = {"CORN": "Corn", "SOYBEANS": "Soybeans", "WHEAT": "Wheat"}
+COMMODITIES = {"CORN": "Corn", "SOYBEANS": "Soybeans", "WHEAT": "Wheat", "COTTON": "Cotton"}
 
-KEEP_UNITS = {
-    "YIELD": {"BU / ACRE", "BU / NET PLANTED ACRE"},
-    "AREA HARVESTED": {"ACRES"},
+# NASS CLASS_DESC values to drop outright, per crop. See "WHAT WE DROP" above.
+DROP_CLASSES = {"Cotton": {"PIMA"}}
+
+# The YIELD units we keep FOR EACH CROP — never a single blanket set. src/basisrisk.py is the
+# one place these are declared, because it is the module whose every output is scale-invariant
+# and therefore cannot detect getting them wrong. AREA HARVESTED is in acres for every crop.
+KEEP_YIELD_UNITS = {
+    crop: {CROP_YIELD_UNIT[crop], CROP_PLANTED_YIELD_UNIT[crop]} for crop in CROP_YIELD_UNIT
 }
+AREA_UNITS = {"ACRES"}
 
 # NASS AGG_LEVEL_DESC -> our short label.
 AGG_LEVELS = {
@@ -150,12 +175,20 @@ def iter_rows(path: Path):
             if crop is None:
                 continue
             stat = r[i["STATISTICCAT_DESC"]]
-            if stat not in KEEP_UNITS:
+            if stat not in ("YIELD", "AREA HARVESTED"):
                 continue
             if r[i["DOMAIN_DESC"]] != "TOTAL":
                 continue
+            cls = r[i["CLASS_DESC"]] or "ALL CLASSES"
+            if cls in DROP_CLASSES.get(crop, ()):        # Pima: a different insured commodity
+                continue
             unit = r[i["UNIT_DESC"]]
-            if unit not in KEEP_UNITS[stat]:
+            # PER CROP. A blanket unit set would let cotton in at BU / ACRE (it has no such
+            # series, so that is merely a silent miss) or — the real hazard — let a crop's
+            # order-of-magnitude-different sibling series through, which nothing downstream
+            # can detect because the estimator is scale-invariant. See the module docstring.
+            keep = AREA_UNITS if stat == "AREA HARVESTED" else KEEP_YIELD_UNITS[crop]
+            if unit not in keep:
                 continue
             agg = AGG_LEVELS.get(r[i["AGG_LEVEL_DESC"]])
             if agg is None:
@@ -177,7 +210,7 @@ def iter_rows(path: Path):
             yield (
                 crop,
                 stat,
-                r[i["CLASS_DESC"]] or "ALL CLASSES",
+                cls,
                 r[i["PRODN_PRACTICE_DESC"]] or "ALL PRODUCTION PRACTICES",
                 unit,
                 agg,
@@ -250,6 +283,17 @@ class NassYield(Connector):
             f"{counties:,} counties, {span[0]}-{span[1]}; by level: "
             + ", ".join(f"{k} {v:,}" for k, v in sorted(counts.items()))
         )
+        # Per crop, WITH THE UNIT AND THE MEDIAN LEVEL. The median is the point: it is the only
+        # figure in this whole pipeline that would move if a crop were loaded at the wrong
+        # scale, so printing it at load time is the earliest a unit regression can be seen.
+        for crop, unit, ncty, med in conn.execute(
+                """SELECT crop, unit, COUNT(DISTINCT loc_key), AVG(value)
+                     FROM nass_county_yield
+                    WHERE stat='YIELD' AND agg_level='COUNTY' AND year >= 2015
+                    GROUP BY crop, unit ORDER BY crop, unit"""):
+            result.coverage.append(
+                f"nass_yield:   {crop:<9} {unit:<24} {ncty:>5,} counties, "
+                f"mean recent yield {med:,.1f}")
         result.coverage.append(
             "nass_yield: nass_county_yield is LOCAL ONLY — build_app_db.py must drop it "
             "(basis_risk_county carries the shipped result)."

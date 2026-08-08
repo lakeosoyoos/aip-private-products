@@ -464,3 +464,47 @@ def test_rows_per_year_reads_the_manifest():
     got = rma_sob.rows_per_year(conn)
     assert [r["year"] for r in got] == [2023, 2024]
     assert got[1]["sob_sales_rows"] == 10 and got[1]["plans"] == 12
+
+
+# ---------------------------------------------------------------- livestock gate
+def test_livestock_plans_are_admitted_and_gated_on_the_plan_not_the_commodity():
+    """LRP/LGM/DRP were invisible: ADM_ROW_CROP_CODES has no 0803/0815/0847, so every
+    livestock row fell through to None. LGM in particular did not exist in this project."""
+    from src.connectors.rma_sob import sob_crop
+
+    assert sob_crop("82", "0803") == "Cattle"
+    assert sob_crop("82", "0815") == "Swine"
+    assert sob_crop("82", "0847") == "Dairy Cattle"
+    assert sob_crop("81", "0803") == "Cattle"      # LRP
+    assert sob_crop("83", "0847") == "Dairy Cattle"  # DRP
+
+
+def test_a_livestock_commodity_under_a_crop_plan_is_still_dropped():
+    """The gate is the PLAN. A cattle commodity code arriving on a row-crop plan is a
+    malformed row, not livestock, and must not be admitted by the new branch."""
+    from src.connectors.rma_sob import sob_crop
+
+    assert sob_crop("02", "0803") is None
+    assert sob_crop("01", "0847") is None
+
+
+def test_unclassified_livestock_is_labelled_not_dropped_and_not_invented():
+    """68% of 2024 and 80% of 2026 plan-82 premium is filed under 9999 'All Other
+    Commodities'. Dropping it discards four fifths of recent LGM; guessing a commodity
+    invents a split RMA never published. It must survive under an obviously-unclassified
+    label so the volume stays visible."""
+    from src.connectors.rma_sob import sob_crop, LIVESTOCK_COMMODITY_CODES
+
+    got = sob_crop("82", "9999")
+    assert got is not None, "unclassified LGM was dropped"
+    assert got not in LIVESTOCK_COMMODITY_CODES.values(), "9999 was folded into a real commodity"
+    assert "unclassified" in got.lower()
+
+
+def test_row_crops_are_completely_unaffected_by_the_livestock_branch():
+    """The base-plan bug cost this project the entire row-crop market once already."""
+    from src.connectors.rma_sob import sob_crop
+
+    for plan in ("01", "02", "03", "90", "44", "32", "88"):
+        assert sob_crop(plan, "0041") == "Corn"
+        assert sob_crop(plan, "0081") == "Soybeans"

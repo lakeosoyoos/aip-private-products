@@ -119,6 +119,114 @@ def test_unknown_band_is_refused():
         B.band_bounds("ECO99", 0.85)
 
 
+def _ratios(n=45, cv=0.13, seed=5, start=1981):
+    """A detrended county yield ratio series — what the estimator actually consumes."""
+    rng = np.random.default_rng(seed)
+    years = list(range(start, start + n))
+    trend = np.array([600.0 + 12.0 * (y - start) for y in years])   # cotton-scale, lb/acre
+    return B.detrend(years, list(trend * (1 + rng.normal(0, cv, n))), "ols").ratio
+
+
+# ── STAX: a third band shape, neither ECO's nor SCO's ───────────────────────
+#
+# 16-STAX-0021 §1 sets the trigger range (90% to 75%) and caps the coverage range at 20 points;
+# §10(b) makes the exit rise to a companion policy's coverage level and voids the band below a
+# 5-point range. So STAX slides like SCO at the top of the election grid and hits a floor like
+# ECO at the bottom, and both halves have to be true at once for the band to be right.
+
+def test_stax_exit_slides_with_the_producer_like_sco():
+    """§10(b)(1): coverage range + companion coverage level must not exceed the trigger."""
+    assert B.band_bounds("STAX90", 0.85) == (0.85, 0.90)      # 5 points
+    assert B.band_bounds("STAX90", 0.80) == (0.80, 0.90)      # 10 points
+    assert B.band_bounds("STAX90", 0.75) == (0.75, 0.90)      # 15 points
+
+
+def test_stax_exit_stops_sliding_at_the_statutory_twenty_points():
+    """Unlike SCO, STAX cannot widen forever: §1 caps the coverage range at 20 percent.
+
+    This is the half a naive 'STAX is just SCO with a different trigger' reading gets wrong. At
+    a 0.65 election SCO would be 21 points wide; STAX is 20 and exits at 0.70, not 0.65.
+    """
+    assert B.band_bounds("STAX90", 0.70) == (0.70, 0.90)
+    assert B.band_bounds("STAX90", 0.65) == (0.70, 0.90)      # NOT (0.65, 0.90)
+    assert B.band_bounds("STAX90", 0.50) == (0.70, 0.90)
+    exit_, trigger = B.band_bounds("STAX90", 0.65)
+    assert trigger - exit_ == pytest.approx(0.20)
+
+
+def test_stax_is_void_rather_than_narrow_below_a_five_point_range():
+    """§10(b)(3)(ii): a reduction below a 5 percent coverage range gives NO coverage at all.
+
+    SCO is legitimately sold one point wide at an 0.85 election, so this floor is STAX's alone
+    and must not leak onto SCO.
+    """
+    with pytest.raises(ValueError, match="nothing to buy"):
+        B.band_bounds("STAX90", 0.90)
+    with pytest.raises(ValueError, match="nothing to buy"):
+        B.band_bounds("STAX90", 0.86)          # a 4-point range rounds to 0 and is void
+    assert B.band_bounds("SCO86", 0.85) == (0.85, 0.86)       # SCO keeps its 1-point band
+
+
+def test_stax_coverage_range_moves_in_five_point_steps():
+    """§10(b)(3)(i) reduces the range 'in 5 percent increments' — an off-grid election gets a
+    band that stops ABOVE its own deductible rather than exactly at it."""
+    exit_, trigger = B.band_bounds("STAX90", 0.78)
+    assert (exit_, trigger) == (0.80, 0.90)                   # 10 points, not 12
+    assert exit_ > 0.78                                        # the 2-point gap is the producer's
+
+
+def test_stax_trigger_is_a_county_threshold_not_the_producers_deductible():
+    """The trigger must be RMA's number and completely unmoved by the farm-side election."""
+    assert all(B.band_bounds("STAX90", cl)[1] == 0.90
+               for cl in (0.65, 0.70, 0.75, 0.80, 0.85))
+    assert B.BAND_SPECS["STAX90"]["trigger"] == 0.90
+
+
+def test_stax_is_upland_cotton_only():
+    """16-STAX-0021 §2(a). A STAX row for corn is a fabrication, not an approximation."""
+    assert B.band_covers_crop("STAX90", "Cotton")
+    for crop in ("Corn", "Soybeans", "Wheat"):
+        assert not B.band_covers_crop("STAX90", crop)
+    # The bands that ARE sold on everything must not be narrowed by this mechanism.
+    for band in ("ECO95", "ECO90", "SCO86"):
+        assert all(B.band_covers_crop(band, c)
+                   for c in ("Corn", "Soybeans", "Wheat", "Cotton"))
+    with pytest.raises(ValueError):
+        B.band_covers_crop("NOPE", "Cotton")
+
+
+def test_stax_trigger_election_is_dominated_by_ninety():
+    """Measured from sob_national plans 35/36 — the reason STAX90 is the only entry built."""
+    assert sum(B.STAX_TRIGGER_MIX.values()) == pytest.approx(1.0, abs=5e-3)
+    assert max(B.STAX_TRIGGER_MIX, key=B.STAX_TRIGGER_MIX.get) == 0.90
+    assert B.STAX_TRIGGER_MIX[0.90] > 0.99
+    # Every trigger RMA offers is inside §1's 90%-to-75% range, and nothing else appears.
+    assert set(B.STAX_TRIGGER_MIX) == {0.75, 0.80, 0.85, 0.90}
+
+
+def test_the_protection_factor_is_recorded_but_scales_no_probability():
+    """§5(a)(1) is 80-120%, and §5(e) applies it to policy protection — liability dollars.
+
+    It therefore cancels out of every ratio this module computes. The test that it is ABSENT
+    from the outputs is the point: someone who finds the constant should not conclude a miss
+    rate needs correcting for it.
+    """
+    assert B.PROTECTION_FACTOR_RANGE == (0.80, 1.20)
+    r = B.basis_risk(_ratios(), band="STAX90", coverage_level=0.75, n_draws=20_000)
+    assert set(r.as_dict()) & {"protection_factor"} == set()
+    for v in (r.miss_rate, r.windfall_rate, r.uncovered_share):
+        assert 0.0 <= v <= 1.0
+
+
+def test_stax_behaves_like_the_area_band_it_is():
+    """Sanity: at the same coverage level a wider band misses less than a narrower one."""
+    ratios = _ratios()
+    wide = B.basis_risk(ratios, band="STAX90", coverage_level=0.75, n_draws=60_000)
+    narrow = B.basis_risk(ratios, band="STAX90", coverage_level=0.85, n_draws=60_000)
+    assert wide.miss_rate < narrow.miss_rate
+    assert 0.0 < wide.miss_rate < 1.0
+
+
 # ── Coverage levels: the producer's deductible, not the band's trigger ───────
 #
 # The whole point of this block is that TWO different percentages are called "coverage level"
@@ -202,6 +310,92 @@ def test_unknown_election_book_is_refused():
 
 
 # ── The two limits that define the metric ────────────────────────────────────
+
+# ── UNITS: the error that leaves no trace in any number this module produces ─
+#
+# Cotton and rice report LB / ACRE; grain reports BU / ACRE. Get it wrong and there is no
+# exception, no warning and no implausible probability — because the estimator's first step
+# divides the series by its own fitted trend, which makes every downstream output exactly
+# scale-invariant. The first test below PROVES that, and it is the justification for the
+# guard's design: `mean_yield` is the only number left that carries a scale, so a level check
+# is not one option among several, it is the only one that can work.
+
+def test_a_fifty_fold_unit_error_changes_no_risk_metric_at_all():
+    """THE REASON THE GUARD IS A LEVEL CHECK. Rescale a whole series and nothing moves.
+
+    If this test ever fails, some metric has acquired a scale dependence and the unit guard
+    could in principle be relaxed. Until then, no CV-based or probability-based check can
+    detect a unit mix-up, and `check_yield_unit` must stay a check on the LEVEL.
+    """
+    years = list(range(1981, 2026))
+    rng = np.random.default_rng(4)
+    right = np.array([600.0 + 12.0 * (y - 1981) for y in years]) * (
+        1 + rng.normal(0, 0.14, len(years)))
+    wrong = right / 50.0                       # the same series, read in the wrong unit
+
+    a, b = B.detrend(years, right, "ols"), B.detrend(years, list(wrong), "ols")
+    assert b.cv == pytest.approx(a.cv, rel=1e-12)
+    assert b.skew == pytest.approx(a.skew, rel=1e-9)
+    assert b.ratio == pytest.approx(a.ratio, rel=1e-12)
+    assert b.pct_per_year == pytest.approx(a.pct_per_year, rel=1e-12)
+
+    for band in ("ECO95", "SCO86", "STAX90"):
+        ra = B.basis_risk(a.ratio, band=band, coverage_level=0.75, n_draws=20_000, seed=1)
+        rb = B.basis_risk(b.ratio, band=band, coverage_level=0.75, n_draws=20_000, seed=1)
+        assert rb.miss_rate == pytest.approx(ra.miss_rate, rel=1e-12), band
+
+    # The ONLY thing that moved is the level — which is exactly what the guard reads.
+    assert b.mean_yield == pytest.approx(a.mean_yield / 50.0)
+
+
+def test_the_unit_guard_catches_cotton_read_as_bushels():
+    """A cotton series divided by ~50 has a perfect CV and an impossible mean. Catch the mean."""
+    assert B.check_yield_unit("Cotton", 850.0) is None            # a real cotton county
+    msg = B.check_yield_unit("Cotton", 17.0)                       # the same county, "bushels"
+    assert msg and "UNIT" in msg
+    # And the reverse: grain read at cotton scale.
+    assert B.check_yield_unit("Corn", 180.0) is None
+    assert B.check_yield_unit("Corn", 9_000.0)
+
+
+def test_the_unit_guard_rejects_a_series_loaded_at_the_wrong_declared_unit():
+    """Belt and braces: if the caller knows the unit it came from, disagreement alone is fatal."""
+    assert B.check_yield_unit("Cotton", 850.0, unit="LB / ACRE") is None
+    msg = B.check_yield_unit("Cotton", 850.0, unit="LB / NET PLANTED ACRE")
+    assert msg and "LB / ACRE" in msg
+    msg = B.check_yield_unit("Cotton", 850.0, unit="BU / ACRE")
+    assert msg and "reported in" in msg
+
+
+def test_the_sanity_bands_accept_every_real_crop_and_are_generously_wide():
+    """A tripwire that rejects real counties is worse than none — it would be switched off."""
+    for crop, typical in (("Corn", 180.0), ("Soybeans", 52.0),
+                          ("Wheat", 46.0), ("Cotton", 900.0)):
+        assert B.check_yield_unit(crop, typical) is None, crop
+        lo, hi = B.YIELD_SANITY[crop]
+        assert lo < typical / 2 and hi > typical * 2, crop
+        # and it must still separate the neighbouring order of magnitude
+        assert B.check_yield_unit(crop, typical / 50.0), crop
+
+
+def test_every_crop_the_estimator_knows_has_a_declared_unit_and_a_sanity_band():
+    """The three tables must not drift apart — a crop in one and not the others is the bug."""
+    assert set(B.CROP_YIELD_UNIT) == set(B.CROP_PLANTED_YIELD_UNIT) == set(B.YIELD_SANITY)
+    assert set(B.CLASS_PREFERENCE) == set(B.CROP_YIELD_UNIT)
+    assert B.CROP_YIELD_UNIT["Cotton"] == "LB / ACRE"
+    assert B.CROP_YIELD_UNIT["Corn"] == "BU / ACRE"
+    for crop, unit in B.CROP_YIELD_UNIT.items():
+        assert B.yield_unit(crop) == unit
+        assert B.yield_unit(crop, planted=True) == B.CROP_PLANTED_YIELD_UNIT[crop]
+        assert "NET PLANTED" in B.CROP_PLANTED_YIELD_UNIT[crop]
+
+
+def test_an_undeclared_crop_raises_rather_than_defaulting_to_bushels():
+    """Silently defaulting is how a 50x error gets shipped. Make it loud."""
+    with pytest.raises(ValueError, match="no yield unit declared"):
+        B.yield_unit("Rice")
+    assert B.check_yield_unit("Rice", 7_000.0)          # no sanity band either -> refused
+
 
 def _county_sample(n=200_000, cv=0.18, seed=3):
     """A left-skewed county yield ratio sample with a realistic CV."""
@@ -838,3 +1032,155 @@ def test_builder_records_data_grade_not_risk(tmp_path):
             "SELECT DISTINCT grade, n_years FROM basis_risk_county"):
         assert grade == B.grade_for(n_years)
         assert grade == "A"                    # the fixture gives every county 51 years
+
+
+# ── Cotton and STAX, through the real build path ────────────────────────────
+#
+# Two things have to hold end to end and neither is visible in the estimator alone: cotton has
+# to survive a loader whose defaults were written for bushels, and STAX has to appear on cotton
+# and nowhere else.
+
+def _cotton_fixture_db(tmp_path, counties=3, seed=23, scale=1.0, unit=None, cls="UPLAND"):
+    """A working DB holding cotton in LB / ACRE, plus one corn county for contrast.
+
+    `scale` and `unit` exist so a test can load the SAME series in the wrong unit and prove the
+    build refuses it. At scale=1 the counties average ~900 lb/acre, which is real cotton.
+    """
+    from src import db as dbmod
+
+    path = tmp_path / f"cotton-{scale}-{unit}-{cls}.db"
+    conn = dbmod.connect(path)
+    dbmod.init_db(conn)
+    rng = np.random.default_rng(seed)
+    years = list(range(1975, 2026))
+    unit = unit or B.CROP_YIELD_UNIT["Cotton"]
+    rows = []
+    nat = np.zeros(len(years))
+    for i in range(counties):
+        base, slope, cv = 500.0 + 60 * i, 9.0 + 0.5 * i, 0.14 + 0.02 * i
+        shock = rng.standard_normal(len(years))
+        nat += shock / counties
+        for j, y in enumerate(years):
+            v = (base + slope * (y - 1975)) * (1 + cv * shock[j]) * scale
+            rows.append(("Cotton", "YIELD", cls, "ALL PRODUCTION PRACTICES", unit,
+                         "COUNTY", f"4800{i}", "TX", f"4800{i}", "10", f"County {i}", y,
+                         max(5.0 * scale, v), "fixture", "2026-01-01"))
+    for j, y in enumerate(years):
+        rows.append(("Cotton", "YIELD", cls, "ALL PRODUCTION PRACTICES", unit,
+                     "NATIONAL", "US", None, None, None, None, y,
+                     (700 + 8.0 * (y - 1975)) * (1 + 0.07 * nat[j]) * scale,
+                     "fixture", "2026-01-01"))
+    # One corn county so the band-per-crop split is exercised, not just asserted.
+    for j, y in enumerate(years):
+        rows.append(("Corn", "YIELD", "ALL CLASSES", "ALL PRODUCTION PRACTICES", "BU / ACRE",
+                     "COUNTY", "19000", "IA", "19000", "10", "Story", y,
+                     (90 + 1.6 * (y - 1975)) * (1 + 0.12 * nat[j]), "fixture", "2026-01-01"))
+    conn.executemany(
+        "INSERT OR REPLACE INTO nass_county_yield (crop, stat, class_desc, practice, unit, "
+        "agg_level, loc_key, state, county_fips, asd_code, county_name, year, value, source, "
+        "fetched_at) VALUES (" + ",".join("?" * 15) + ")", rows)
+    conn.commit()
+    return conn
+
+
+def test_the_builder_writes_stax_for_cotton_and_for_nothing_else(tmp_path):
+    """16-STAX-0021 §2(a), enforced where it matters: in the rows that ship."""
+    conn = _cotton_fixture_db(tmp_path)
+    args = _Args(crops=["Corn", "Cotton"], bands=["ECO95", "SCO86", "STAX90"],
+                 coverage_levels=[0.70, 0.75, 0.85])
+    _builder().build(conn, args)
+
+    got = {(c, b) for c, b in conn.execute(
+        "SELECT DISTINCT crop, band FROM basis_risk_county")}
+    assert ("Cotton", "STAX90") in got
+    assert ("Corn", "STAX90") not in got
+    # The universally-sold bands must still be written for both crops.
+    for crop in ("Corn", "Cotton"):
+        for band in ("ECO95", "SCO86"):
+            assert (crop, band) in got, (crop, band)
+
+    n_stax = conn.execute("SELECT COUNT(*) FROM basis_risk_county "
+                          "WHERE band='STAX90'").fetchone()[0]
+    assert n_stax == 3 * 3                       # 3 cotton counties x 3 coverage levels
+
+
+def test_stax_rows_carry_the_right_trigger_and_a_capped_exit(tmp_path):
+    """The band's geometry has to survive into the table, not just into band_bounds()."""
+    conn = _cotton_fixture_db(tmp_path)
+    _builder().build(conn, _Args(crops=["Cotton"], bands=["STAX90"],
+                                 coverage_levels=[0.65, 0.75, 0.85]))
+    assert sorted({r[0] for r in conn.execute(
+        "SELECT DISTINCT coverage_level FROM basis_risk_county WHERE band='STAX90'")}) == [
+        0.65, 0.75, 0.85]
+    # p_county_below_trigger is a COUNTY-side quantity at a fixed 0.90 trigger, so WITHIN a
+    # county it must be identical at every producer coverage level. If the band's trigger were
+    # being confused with the producer's election it would vary — the Step 5b bug, in the data.
+    for (fips,) in conn.execute("SELECT DISTINCT county_fips FROM basis_risk_county"):
+        vals = {round(r[0], 12) for r in conn.execute(
+            "SELECT p_county_below_trigger FROM basis_risk_county "
+            "WHERE band='STAX90' AND county_fips=?", (fips,))}
+        assert len(vals) == 1, (fips, vals)
+    # And the 0.65 election must give the SAME band as 0.70 — both are capped at 20 points —
+    # so their county-side payout expectation is identical too, unlike SCO's.
+    for (fips,) in conn.execute("SELECT DISTINCT county_fips FROM basis_risk_county"):
+        assert B.band_bounds("STAX90", 0.65) == B.band_bounds("STAX90", 0.70)
+
+
+def test_the_builder_refuses_cotton_loaded_at_the_wrong_scale(tmp_path):
+    """The whole unit story, end to end: a 50x error must not produce rows.
+
+    Without the level guard this build would succeed and write miss rates identical to the
+    correct ones — see test_a_fifty_fold_unit_error_changes_no_risk_metric_at_all.
+    """
+    conn = _cotton_fixture_db(tmp_path, scale=1 / 50.0)
+    res = _builder().build(conn, _Args(crops=["Cotton"], bands=["STAX90"],
+                                       coverage_levels=[0.75]))
+    assert conn.execute("SELECT COUNT(*) FROM basis_risk_county "
+                        "WHERE crop='Cotton'").fetchone()[0] == 0
+    assert any("UNIT" in k for k in res["stats"]), res["stats"]
+    assert res["stats"]["Cotton: implausible mean yield — UNIT?"] == 3
+
+
+def test_the_builder_finds_cotton_without_being_told_its_unit_or_class(tmp_path):
+    """Cotton has no ALL CLASSES series and is not in bushels; both defaults had to change."""
+    conn = _cotton_fixture_db(tmp_path)
+    s = B.load_series(conn, "Cotton", "48000", min_year=1975, max_year=2025)
+    assert s is not None, "cotton fell through the bushel/ALL CLASSES defaults"
+    years, values, cls, prac = s
+    assert cls == "UPLAND"
+    assert len(years) == 51
+    assert 150 < float(np.mean(values)) < 1_800          # lb/acre, not bushels
+
+    res = _builder().build(conn, _Args(crops=["Cotton"], bands=["ECO95"],
+                                       coverage_levels=[0.75]))
+    assert res["n"] == 3
+    for (cu,) in conn.execute("SELECT DISTINCT class_used FROM basis_risk_county"):
+        assert cu == "UPLAND"
+
+
+def test_stax_and_eco90_share_a_miss_rate_but_not_a_band(tmp_path):
+    """A trap for a reader comparing the two bands: identical miss_rate, different product.
+
+    `miss_rate` is P(county >= trigger | farm loss) and depends ONLY on the trigger, so any two
+    bands triggering at 0.90 have the same one by construction — STAX90 does not "agree with"
+    ECO90, it is answering a question that cannot distinguish them. What separates them is the
+    EXIT, and that shows up in the width-dependent columns. If those ever collapse together too,
+    the exit has stopped being applied and STAX has silently become ECO90.
+    """
+    conn = _cotton_fixture_db(tmp_path, counties=1)
+    _builder().build(conn, _Args(crops=["Cotton"], bands=["ECO90", "STAX90"],
+                                 coverage_levels=[0.65, 0.70, 0.85]))
+    rows = {(b, cl): (m, u) for b, cl, m, u in conn.execute(
+        "SELECT band, coverage_level, miss_rate, uncovered_share FROM basis_risk_county")}
+
+    for cl in (0.65, 0.70, 0.85):
+        assert rows[("ECO90", cl)][0] == pytest.approx(rows[("STAX90", cl)][0]), cl
+
+    # ECO90's exit is fixed, so its width-dependent column cannot move with the election...
+    assert len({round(rows[("ECO90", cl)][1], 12) for cl in (0.65, 0.70, 0.85)}) == 1
+    # ...while STAX's does, because its exit slides.
+    assert rows[("STAX90", 0.85)][1] != pytest.approx(rows[("STAX90", 0.70)][1])
+    # And the 20-point cap makes 0.65 and 0.70 literally the same band.
+    assert rows[("STAX90", 0.65)][1] == pytest.approx(rows[("STAX90", 0.70)][1])
+    # The two products differ at the same coverage level, which is the point.
+    assert rows[("STAX90", 0.70)][1] != pytest.approx(rows[("ECO90", 0.70)][1])

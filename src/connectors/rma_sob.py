@@ -199,6 +199,22 @@ def sob_net_acres(row: dict[str, str]) -> float:
     return _to_float(row.get("endorsed_companion_acres"))
 
 
+# --- livestock (LRP 81 / LGM 82 / DRP 83) -------------------------------------------------
+# These live ONLY in sobtpu: sobcov omits the livestock plans entirely (see the module
+# docstring), so admitting them here can add rows to sob_unit and cannot add any to sob_sales.
+LIVESTOCK_PLAN_CODES = {"81", "82", "83"}
+LIVESTOCK_COMMODITY_CODES = {"0803": "Cattle", "0815": "Swine", "0847": "Dairy Cattle"}
+# RMA files most recent LGM under 9999 "All Other Commodities" — 68% of 2024 and 80% of 2026
+# plan-82 premium. Dropping those rows would discard four fifths of recent LGM; silently
+# folding them into a named commodity would invent a split RMA did not publish. They are
+# admitted under an explicit label instead, so the volume is visible and obviously
+# unclassified. src.lgm.commodity_from_sob() recovers the real commodity from type code +
+# quantity type for callers that need it; that recovery is deliberately NOT done here,
+# because this function only sees commodity_code.
+LIVESTOCK_UNCLASSIFIED_CODE = "9999"
+LIVESTOCK_UNCLASSIFIED_LABEL = "Livestock (unclassified)"
+
+
 def sob_crop(plan_code: str, commodity_code: str,
              plan_to_pid: dict[str, int] | None = None,
              product_crop_set: set[tuple[int, str]] | None = None) -> str | None:
@@ -213,6 +229,13 @@ def sob_crop(plan_code: str, commodity_code: str,
     commodity_code = str(commodity_code).zfill(4)
     if plan_code == WFRP_PLAN_CODE:
         return WFRP_CROP_LABEL if commodity_code == WFRP_COMMODITY_CODE else None
+    # Livestock is gated on the PLAN, not ADM_ROW_CROP_CODES, which has no 0803/0815/0847 —
+    # so these rows used to fall through to None and vanish. LGM in particular was invisible
+    # to this project entirely.
+    if plan_code in LIVESTOCK_PLAN_CODES:
+        if commodity_code == LIVESTOCK_UNCLASSIFIED_CODE:
+            return LIVESTOCK_UNCLASSIFIED_LABEL
+        return LIVESTOCK_COMMODITY_CODES.get(commodity_code)
     crop = ADM_ROW_CROP_CODES.get(commodity_code)
     if crop is None:
         return None

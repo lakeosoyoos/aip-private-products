@@ -32,6 +32,7 @@ Business. This document supplies the fourth.
 | `ECO95` | 95% of expected county revenue/yield | 86% | 9 points, fixed |
 | `ECO90` | 90% | 86% | 4 points, fixed |
 | `SCO86` | 86% | the producer's own coverage level | **depends on the producer** — 1 point at 85% RP |
+| `STAX90` | 90% of expected county revenue (upland cotton only) | the producer's own coverage level, **floored at 70%** | **depends on the producer** — 20 points at 70% and below, 5 points at 85%, void at 90% |
 
 ### Two things are called "coverage level". Read this before reading any number below
 
@@ -41,9 +42,12 @@ Business. This document supplies the fourth.
 | **Producer coverage level** — 0.50 … 0.85 | the producer's own MPCI **deductible** | the **farm** | `coverage_level` |
 
 `miss_rate` = P( county index ≥ **trigger** │ farm ratio < **producer coverage level** ). The two
-percentages never touch except in `SCO86`, where the band *exits* at the producer's own level, so
-the election also sets the band's width. §4 Step 5b works this through. It is the easiest thing in
-this document to get backwards, and getting it backwards inverts the sign of every conclusion.
+percentages never touch except in `SCO86` and `STAX90`, where the band *exits* at the producer's
+own level, so the election also sets the band's width. STAX differs from SCO in that its exit stops
+sliding at a statutory 20 points (16-STAX-0021 §1) and the band is void rather than narrow below 5
+points (§10(b)(3)(ii)); its *trigger* is county-side and never moves. §4 Step 5b works this
+through, and §8a works STAX through specifically. It is the easiest thing in this document to get
+backwards, and getting it backwards inverts the sign of every conclusion.
 
 ---
 
@@ -93,15 +97,21 @@ Four levels, not one, because the model needs one parameter a county series cann
 Gates: analysis window **1975–2025**; series must still be **live** (reach 2018 or later); at least
 **12 usable years**.
 
-| Crop | Counties scored | Median years | Grade A (≥30 yrs) |
-|---|---|---|---|
-| Corn | ~1,900 | 48 | ~1,790 |
-| Soybeans | ~1,630 | 48 | ~1,475 |
-| Wheat | ~1,580 (Winter + Spring + Durum) | 46 | ~1,490 |
+| Crop | Unit | Counties scored | Median years | Grade A (≥30 yrs) |
+|---|---|---|---|---|
+| Corn | `BU / ACRE` | ~1,900 | 48 | ~1,790 |
+| Soybeans | `BU / ACRE` | ~1,630 | 48 | ~1,475 |
+| Wheat | `BU / ACRE` | ~1,580 (Winter + Spring + Durum) | 46 | ~1,490 |
+| **Cotton (upland)** | **`LB / ACRE`** | **408** | 45 | **351** |
 
-Three crops, not because the estimator cares which crop it is, but because the connector's
-`COMMODITIES` map stops there. **§8a measures what every other field crop would yield if loaded** —
-cotton is the one worth doing, canola and dry peas genuinely cannot be done.
+Four crops. Cotton is here because it is the crop **STAX** settles on and the band cannot be
+estimated without it: 804 counties have some upland-cotton history, 423 are still reporting in
+2018 or later, **408** clear the 12-year gate and **351** of those reach grade A. Note the unit
+column — it is not decoration, see "Units" in §8a. **Pima cotton is excluded**: 10 usable counties,
+a different insured commodity, and not covered by STAX.
+
+**§8a measures what every other field crop would yield if loaded** — cotton was the one worth
+doing, canola and dry peas genuinely cannot be done.
 
 ### Data decisions that materially affect the answer
 
@@ -116,9 +126,11 @@ cotton is the one worth doing, canola and dry peas genuinely cannot be done.
   enter a total crop failure into the history.
 * **`OTHER (COMBINED) COUNTIES` (code 998) is dropped.** It is NASS's residual bucket for
   suppressed counties, has no FIPS, and its composition changes year to year.
-* **Harvested-acre yield is the default** (`BU / ACRE`). Planted-acre yield
-  (`BU / NET PLANTED ACRE`, which includes abandonment and so carries a deeper downside tail) is
-  loaded as a robustness check but has far fewer county-years.
+* **Harvested-acre yield is the default, at each crop's OWN unit** — `BU / ACRE` for grain,
+  `LB / ACRE` for cotton. Planted-acre yield (`… / NET PLANTED ACRE`, which includes abandonment
+  and so carries a deeper downside tail) is loaded as a robustness check but has far fewer
+  county-years. Getting the unit wrong is the one loading error nothing downstream can detect,
+  because every metric here is scale-invariant; see "Units" in §8a for the guard.
 
 ---
 
@@ -520,25 +532,119 @@ no band variant, and `BASIS_BAND_NOTE` says so on the page.
 penetration rate in year one is what a new product looks like, not necessarily an untapped market;
 the map's largest number is also its youngest, and it will move a lot on its own.
 
-### STAX — a loading problem, not a modelling problem
+### STAX — was a loading problem, and is now loaded
 
-STAX is upland-cotton-only and settles on **expected area revenue** with a trigger the producer
-picks between 90% and 75% and a coverage range up to 20 points (23-STAX-0021 §1). That is
-structurally the *same shape* the estimator already handles — a county revenue index with a trigger
-and an exit. Nothing conceptual is missing. What is missing is cotton:
+STAX is upland-cotton-only and settles on **expected area revenue**. It was scoped as a loading
+problem rather than a modelling one, and that held: the band is now in `BAND_SPECS` as `STAX90`
+and cotton is in the loader. What follows is what was verified, and the one place the original
+scoping was wrong.
 
-1. `src/connectors/nass_yield.py`'s `COMMODITIES` map stops at `CORN / SOYBEANS / WHEAT`. Adding
-   `COTTON → Cotton` loads **408 usable upland-cotton counties**, 351 of them grade A (measured
-   below).
-2. `basisrisk.DEFAULT_UNIT` is hard-coded to `BU / ACRE`; cotton and rice are `LB / ACRE`, so the
-   unit needs to become per-crop.
-3. `BAND_SPECS` needs STAX entries keyed by trigger — `STAX90` (0.90 → 0.70), `STAX85`, … — and the
-   protection factor (80–120%, §5(a)) scales liability, not the trigger, so it does not enter
-   `miss_rate` at all.
-4. `PRICE_VOL` needs cotton's factor; the 2026 ADM publishes it (0.13 on the rows checked).
+**The band, from the primary source.** RMA Cotton Crop Provisions **16-STAX-0021**:
 
-STAX's whole book is **$0.22B unclaimed** against MCO's $7.89B, so this is a small prize — but it
-is a small prize for a day's work, whereas MCO is a large prize for a research programme.
+| Element | Provision | Value |
+|---|---|---|
+| Area loss trigger | §1 | *"the percentage of expected area revenue you choose, ranging from 90 percent to 75 percent"* |
+| Coverage range | §1 | *"not less than 0 percent and not more than 20 percent"* |
+| Protection factor | §5(a)(1) | *"From a range of 80 percent to 120 percent"* |
+| Companion-policy limit | §10(b)(1) | coverage range **+** companion coverage level *"must not exceed the area loss trigger"* |
+| Stepping / void | §10(b)(3) | reduce *"in 5 percent increments"*; below a 5-point range, *"no STAX coverage will be provided"* |
+| Upland only | §2(a) | *"the insured crop will be all upland cotton"* |
+| Not with SCO on the same acre | §10(c)(1) | *"the same acreage cannot be covered by both STAX and SCO"* |
+
+**Which side is the trigger on?** Both, in different places — STAX is a *third* shape, not ECO's
+and not SCO's, and the original scoping's `STAX90 (0.90 → 0.70)` got this half wrong:
+
+* The **trigger is county-side, like ECO's.** The producer elects it, but it is a percentage of
+  expected *area* revenue and is compared against the county. It never moves with their
+  deductible. That is why each trigger is its own `BAND_SPECS` entry rather than being derived
+  from `coverage_level`.
+* The **exit is farm-side-bounded, like SCO's — but floored.** §10(b)(1) is the same "you cannot
+  insure below your own deductible" rule that gives SCO its sliding exit, so the exit *rises* to
+  the companion policy's coverage level. Unlike SCO it cannot slide forever: the 20-point cap
+  floors it at `trigger − 0.20`. So `exit = max(coverage_level, trigger − 0.20)` — **not** a
+  fixed 0.70.
+
+At the 0.90 trigger, across the five published coverage levels:
+
+| Producer's coverage level | 0.65 | 0.70 | 0.75 | 0.80 | 0.85 | 0.90 |
+|---|---|---|---|---|---|---|
+| STAX exit | 0.70 | 0.70 | 0.75 | 0.80 | 0.85 | — |
+| Coverage range | 20p | 20p | 15p | 10p | 5p | **void** (§10(b)(3)(ii)) |
+
+**The trigger election is measured, not assumed.** `sob_national` plans 35/36 report STAX's own
+trigger in `coverage_level`, and it takes only the values §1 allows — an independent confirmation
+of the provisions from the sales side. **99.5% of RY2026 STAX acres elect 0.90** (99.6% in RY2025,
+99.5% in RY2024), which is why `STAX90` is the only entry built. `basisrisk.STAX_TRIGGER_MIX`
+carries the distribution; adding `STAX85` is one line, because the shape is parameterised.
+
+**A trap when reading the built rows: `STAX90` and `ECO90` have identical `miss_rate`.** That is
+arithmetic, not a bug and not a coincidence. `miss_rate` is P(county ≥ **trigger** │ farm loss) and
+depends *only* on the trigger, so any two bands triggering at 0.90 must agree on it exactly. The
+two products are not the same, and what separates them is the **exit**, which shows up in the
+width-dependent columns — `uncovered_share`, `payout_corr`, `expected_payment_per_dollar`. On a
+measured cotton county at the 0.90 trigger, `uncovered_share` runs 0.538 / 0.538 / 0.513 / 0.481 /
+0.438 across coverage levels 0.65 → 0.85 for STAX (the first two identical, because the 20-point
+cap makes them literally the same band) against a flat 0.429 for ECO90 at every level. So: **do not
+rank STAX against ECO90 on `miss_rate`** — it cannot tell them apart.
+
+**The protection factor does not enter any number here, and that is correct.** §5(e) applies it as
+the final multiplier on *policy protection*, i.e. to liability dollars on both sides of every ratio
+the estimator computes. Every output is a probability or a share, so it cancels exactly. It changes
+what a miss **costs**, never how often one happens. `PROTECTION_FACTOR_RANGE` records it so that
+nobody "corrects" a miss rate for a factor the miss rate has no dependence on.
+
+**Cotton's price volatility: 0.13, and a trap in getting there.** `A00810`'s `Price Volatility
+Factor` carries a 0.00 row alongside the real one for a large share of cells, and the share is
+crop-specific: 25% of corn's rows are zeros but **exactly half** of cotton's are (6,813 of 13,626).
+A plain median therefore returns the right answer for corn (0.15) and **0.06** for cotton — the
+zero/non-zero boundary, not a volatility. Cotton's actual published distribution on the plan-35
+rows is 0.12 ×108, **0.13 ×6,066**, 0.14 ×639; the cotton ARPI plans (05/06) carry no zeros at all
+and are uniformly 0.13. `PRICE_VOL["Cotton"] = 0.13`.
+
+STAX's whole book is **$0.22B unclaimed** against MCO's $7.89B, so this was a small prize — but a
+small prize for a day's work, whereas MCO is a large prize for a research programme.
+
+> **Still to wire up:** `src/rowcropopt.py` maps `"STAX": ()` — no band variant — and
+> `BASIS_BAND_NOTE["STAX"]` still says STAX has no estimator. Both are now false. That file is
+> owned elsewhere; the change is `"STAX": ("STAX90",)` and deleting the note.
+
+### Units — the one loading error that leaves no trace
+
+Cotton and rice report **`LB / ACRE`**; corn, soybeans and wheat report **`BU / ACRE`**. This is
+the single failure mode in the whole pipeline that produces no error, no warning and no
+implausible number, and it deserves its own heading because the reason is structural rather than
+incidental.
+
+**Every metric in `src/basisrisk.py` is exactly scale-invariant.** Step 1 divides the series by its
+own fitted trend, so `ratio` is unitless and `cv`, `skew`, `miss_rate`, `windfall_rate` and the
+rest are *bit-identical* under a rescale of the input. Multiply a county's whole yield history by
+50 and not one probability changes.
+(`tests/test_basisrisk.py::test_a_fifty_fold_unit_error_changes_no_risk_metric_at_all` asserts
+exactly this.) A unit mix-up therefore yields a perfectly reasonable-looking answer.
+
+**And the hazard is real, not hypothetical.** NASS carries cotton at *both* `LB / ACRE` and
+`LB / NET PLANTED ACRE`, and the second series' county values run **10–50× smaller** than the first
+— Merced CA 1987 reports 119.3 against a true figure near 1,150. Whatever NASS means by that
+series, a county that picked it up would detrend to a completely ordinary CV.
+
+So the defence is layered, and none of the layers is a CV check:
+
+1. **The loader takes units per crop**, from `basisrisk.CROP_YIELD_UNIT` / `CROP_PLANTED_YIELD_UNIT`
+   — one source of truth, never a blanket set. A cotton row in `BU / ACRE` and a corn row in
+   `LB / ACRE` are both refused at load.
+2. **`load_series` defaults `unit` to the crop's own unit**, not to `BU / ACRE`. The old default
+   was harmless while every crop was grain; against cotton it silently matches zero rows.
+3. **`CLASS_PREFERENCE["Cotton"] = ["UPLAND"]`.** Cotton has **no `ALL CLASSES`** county series at
+   all, so the generic default would also have matched nothing.
+4. **The builder range-checks `mean_yield`** against `basisrisk.YIELD_SANITY` and refuses the
+   county. `mean_yield` is the *only* number the estimator produces that carries a scale, so this
+   is not one option among several — it is the only signal a unit error leaves behind.
+5. **Pima is dropped at load.** A different insured commodity (ADM 0022 vs upland's 0021), not
+   covered by STAX (§2(a)), 10 usable counties. Dropping it makes `crop='Cotton'` mean upland
+   cotton unambiguously, so a query that forgets to filter on class cannot blend two crops.
+
+The rule to carry forward: **never replace the level check with a CV check.** A rescaled series has
+an identical CV, which is the whole reason the level check exists.
 
 ### Which further crops are feasible from NASS county yields
 
@@ -631,26 +737,38 @@ Measured footprint: `nass_county_yield` ≈ **420 MB** with its index (must not 
 **The coverage-level dimension is this table's one real budget line.** 373 bytes per row, measured,
 and every extra level is a full set of ~2,960 rows:
 
-| Coverage levels built | Rows | `basis_risk_county` | App DB |
-|---|---|---|---|
-| 1 (the old `0.85`) | 14,805 | 6.4 MB | 60 MB |
-| **5 (the default now)** | **74,025** | **32.6 MB** | **~86 MB** |
+| Coverage levels built | Crops | Rows | `basis_risk_county` | App DB |
+|---|---|---|---|---|
+| 1 (the old `0.85`) | grain | 14,805 | 6.4 MB | 59.9 MB |
+| 5 | grain | 74,025 | 32.2 MB | 85.7 MB |
+| **5 (the default now)** | **grain + cotton** | **82,185** | **35.8 MB** | **89.3 MB** |
 
-That is inside the 95 MB ceiling and inside `build_app_db.py`'s 90 MB warning, but it spends most of
-the remaining headroom. Two levers, in order of preference, if it ever needs to come back down:
+**Cotton costs +8,160 rows and +3.6 MB** — 408 counties × 4 bands (ECO95, ECO90, SCO86, STAX90) ×
+5 coverage levels. Measured, not estimated: the 14,805 real rows were read out of the committed
+app DB, replicated across the five levels, and cotton's rows built at the same string widths, then
+`VACUUM`ed and sized with `dbstat` over the table plus both its indexes — the same basis on which
+the app DB's own 6.44 MB is measured, which the 1-level row reproduces exactly.
 
-1. **Drop levels, not columns.** `--coverage-levels 0.70,0.75,0.80,0.85` still covers 92.0% of
-   buy-up acres and 93.7% of SCO buyers' acres for 26 MB.
-2. **Normalise behind a view.** About half of each row (state, county name, `n_years`, the trend
-   fit, `county_cv`, `county_skew`, `corr_national`, `grade`, provenance) does not vary with the
-   coverage level and is duplicated five times. Splitting the per-county facts into one table and
-   the per-level metrics into another, with `basis_risk_county` recreated as a **view** over the
-   join, measures at **17.2 MB** for the same five levels — a 15.4 MB saving with no change to any
-   reader, since every consumer selects named columns. `prf_opt_best` is already exactly this
-   pattern (`scripts/build_app_db.py: dedupe_prf_opt_best`), and `REQUIRED` / `REQUIRED_COLUMNS`
-   already accept a view. **Not done here**: it needs a DDL change in `src/db.py` plus a migration
-   that drops the existing table (a `CREATE VIEW IF NOT EXISTS` is silently a no-op when a table of
+**It fits: 89.3 MB leaves 5.7 MB against the 95 MB budget and 10.7 MB against GitHub's hard 100 MB
+limit.** It does spend most of the remaining headroom, so the next addition of this size will not
+fit and one of the levers below has to be pulled first. Two levers, in order of preference:
+
+1. **Normalise behind a view — now the preferred lever, because it costs no coverage.** About half
+   of each row (state, county name, `n_years`, the trend fit, `county_cv`, `county_skew`,
+   `corr_national`, `grade`, provenance) does not vary with the coverage level and is duplicated
+   five times. Splitting the per-county facts into one table and the per-level metrics into
+   another, with `basis_risk_county` recreated as a **view** over the join, measures at
+   **17.2 MB** for the grain-only five levels against 32.2 MB flat — a 15.0 MB saving with no
+   change to any reader, since every consumer selects named columns. Scaled to the
+   grain + cotton row count that is roughly **19 MB against 35.8 MB, taking the app DB to about
+   73 MB** and restoring ~16 MB of headroom. `prf_opt_best` is already exactly this pattern
+   (`scripts/build_app_db.py: dedupe_prf_opt_best`), and `REQUIRED` / `REQUIRED_COLUMNS` already
+   accept a view. **Not done here**: it needs a DDL change in `src/db.py` plus a migration that
+   drops the existing table (a `CREATE VIEW IF NOT EXISTS` is silently a no-op when a table of
    that name exists), and the working DB was mid-rebuild.
+2. **Drop levels, not columns.** `--coverage-levels 0.70,0.75,0.80,0.85` still covers 92.0% of
+   buy-up acres and 93.7% of SCO buyers' acres. This is second now because it costs real coverage
+   and the view costs none.
 
 ### Files
 

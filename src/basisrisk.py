@@ -176,14 +176,83 @@ WHAT THIS MODULE DOES NOT DO
   leg is national, like price, so it cannot miss anybody, while a farm's OWN input costs can
   and do differ from the index. No MCO rows are written; consumers see `unknown`.
   docs/basis_risk.md §8 sets out exactly what an MCO estimator would need.
-* STAX. Not modelled either, but for a much smaller reason: it is a plain county REVENUE
-  trigger (90% down to 75%, up to a 20-point range — 23-STAX-0021 §1) and the machinery here
-  already handles that shape. What is missing is upland COTTON in nass_county_yield; the
-  connector's COMMODITIES map stops at corn, soybeans and wheat. Add cotton and STAX is a
-  BAND_SPECS entry, not a research project.
 * It does not model prevented planting, replant, or the quality adjustments that can make a
   farm's insurable loss differ from its yield loss.
 * It has no farm-level data anywhere in it. See the honesty block above.
+
+STAX IS MODELLED, AND IT IS A THIRD SHAPE — NOT ECO's AND NOT SCO's
+===================================================================
+Step 5b says the band's trigger is the COUNTY side and the producer's election is the FARM
+side, with SCO the one exception because its EXIT slides down to the producer's own level.
+STAX is neither case cleanly, so it gets its own paragraph. From the RMA Cotton Crop
+Provisions, 16-STAX-0021 (quoted verbatim in docs/rowcrop_endorsement_stacking.md §3.4):
+
+  §1 "Area loss trigger - The percentage of expected area revenue you choose, ranging from 90
+      percent to 75 percent, below which an indemnity is paid..."
+  §1 "Coverage range - A percentage of not less than 0 percent and not more than 20 percent,
+      which represents the amount of the expected area revenue covered by STAX..."
+  §10(b)(1) "The coverage range you elect for the type and practice added to the coverage
+      level you have elected for the companion policy must not exceed the area loss trigger..."
+  §10(b)(3) reduces the coverage range "in 5 percent increments" until that holds, and "If
+      this reduction would result in a coverage range of less than 5 percent, no STAX coverage
+      will be provided for that type or practice for the crop year."
+
+So both halves are true at once:
+
+  * THE TRIGGER IS COUNTY-SIDE, like ECO's. The producer picks it (0.90 / 0.85 / 0.80 / 0.75),
+    but it is a percentage of expected AREA revenue and it is compared against the COUNTY. It
+    is emphatically NOT their deductible, and it does not move when their deductible moves.
+    That is why each trigger is its own BAND_SPECS entry (STAX90, ...), exactly like ECO95 and
+    ECO90, rather than being derived from `coverage_level`.
+  * THE EXIT IS FARM-SIDE-BOUNDED, like SCO's — but floored. §10(b)(1) is the same "you cannot
+    insure below your own deductible" rule that gives SCO its sliding exit, so the exit rises
+    to the companion policy's coverage level when that level is high. Unlike SCO it cannot
+    slide indefinitely: the 20-point cap on the coverage range floors the exit at
+    trigger - 0.20. At the 0.90 trigger, a 0.65 or 0.70 election both exit at 0.70 (the full
+    20 points), 0.75 exits at 0.75 (15 points), 0.85 exits at 0.85 (5 points), and 0.90 is
+    refused outright because §10(b)(3)(ii) voids a range under 5 points.
+
+  Mechanically that is `exit = max(coverage_level, trigger - 0.20)`, and `band_bounds` applies
+  it through the `max_width` / `min_width` keys rather than special-casing the band name.
+
+  THE ELECTION IS MEASURED, NOT ASSUMED: 99.5% of RY2026 STAX acres elect the 0.90 trigger
+  (STAX_TRIGGER_MIX below), which is why STAX90 is the entry the build ships. The Summary of
+  Business also confirms the provisions from the sales side — plans 35/36 report coverage_level
+  at 0.75/0.80/0.85/0.90 and nowhere else, which is §1's range exactly.
+
+  THE PROTECTION FACTOR IS NOT IN ANY NUMBER HERE, AND THAT IS CORRECT. §5(a)(1) lets the
+  producer scale liability "From a range of 80 percent to 120 percent" — the only product in
+  this layer that can exceed 100%. But §5(e) applies it as the last multiplier on POLICY
+  PROTECTION, i.e. it scales the dollars on both sides of every ratio this module computes.
+  Every output here is a probability or a share, so the protection factor cancels out of all of
+  them exactly. It changes how much a miss COSTS, never how often one happens. See
+  PROTECTION_FACTOR_RANGE.
+
+  STAX AND SCO CANNOT COVER THE SAME ACRE (§10(c)(1): "the same acreage cannot be covered by
+  both STAX and SCO"), which is why src/rowcropopt.py treats them as an exclusive pair. Both
+  bands are still estimated for every cotton county, because that is the choice a producer is
+  actually making between.
+
+UNITS: THE ONE LOADING ERROR THAT WOULD NOT SHOW UP IN ANY NUMBER HERE
+======================================================================
+Cotton and rice report in LB / ACRE; corn, soybeans and wheat report in BU / ACRE. Getting
+that wrong is not a cosmetic error, and — this is the dangerous part — it is INVISIBLE to
+every metric in this module. Step 1 divides the series by its own fitted trend, so `ratio` is
+unitless and `cv`, `skew`, `miss_rate` and all the rest are EXACTLY scale-invariant: multiply
+a whole yield series by 50 and not one probability here changes by a single digit. A unit
+mix-up therefore produces a perfectly plausible-looking answer rather than an error.
+
+It is not a hypothetical. NASS carries cotton at BOTH 'LB / ACRE' and 'LB / NET PLANTED ACRE',
+and the second series' county values run 10-50x SMALLER than the first (Merced CA 1987: 119.3
+vs ~1,150). Whatever NASS means by it, a county that picked it up would be detrended into a
+completely reasonable CV.
+
+The only place a unit error is visible is the LEVEL — `mean_yield`, the one column here that
+is NOT scale-invariant. So that is where the guard lives: CROP_YIELD_UNIT pins the unit each
+crop is loaded and selected at, and `check_yield_unit()` range-checks the fitted mean against
+what that crop can physically yield. The builder refuses the county rather than writing it.
+Never replace that check with one on `cv` — a rescaled series has an identical CV, which is
+the whole reason this paragraph exists.
 """
 from __future__ import annotations
 
@@ -199,11 +268,50 @@ import numpy as np
 # ECO attaches at 86% and runs UP to its elected trigger (90% or 95%) of expected county
 # revenue/yield. SCO runs from 86% DOWN to the producer's own underlying coverage level, so
 # its width depends on the producer: at 85% RP, SCO is one coverage point wide.
+#
+# Keys:
+#   trigger   - the COUNTY-side threshold. RMA's, never the producer's deductible.
+#   exit      - fixed lower bound, or None when it slides down to the producer's own level.
+#   max_width - statutory cap on trigger - exit, or None when uncapped. STAX only: 16-STAX-0021
+#               §1 caps the coverage range at 20 points, which FLOORS the sliding exit at
+#               trigger - 0.20 (see the STAX section of the module docstring).
+#   min_width - the width below which the band is void rather than merely small. STAX only:
+#               §10(b)(3)(ii) refuses a coverage range under 5 points. SCO has no such floor —
+#               it is legitimately sold one point wide at an 0.85 election — so it stays None
+#               and `band_bounds` refuses it only at zero width.
+#   crops     - None for every crop, or the tuple of crops the band is offered on. STAX is
+#               upland cotton ONLY (§2(a): "the insured crop will be all upland cotton"), so
+#               writing a STAX row for corn would be a fabrication, not an approximation.
 BAND_SPECS: dict[str, dict] = {
-    "ECO95": {"trigger": 0.95, "exit": 0.86, "label": "ECO, 95% trigger"},
-    "ECO90": {"trigger": 0.90, "exit": 0.86, "label": "ECO, 90% trigger"},
-    "SCO86": {"trigger": 0.86, "exit": None, "label": "SCO (exits at the underlying level)"},
+    "ECO95": {"trigger": 0.95, "exit": 0.86, "max_width": None, "min_width": None,
+              "crops": None, "label": "ECO, 95% trigger"},
+    "ECO90": {"trigger": 0.90, "exit": 0.86, "max_width": None, "min_width": None,
+              "crops": None, "label": "ECO, 90% trigger"},
+    "SCO86": {"trigger": 0.86, "exit": None, "max_width": None, "min_width": None,
+              "crops": None, "label": "SCO (exits at the underlying level)"},
+    # STAX at the 0.90 area loss trigger — 99.5% of the book (STAX_TRIGGER_MIX). The other
+    # three triggers are real and selectable; they are simply not worth the rows until someone
+    # asks. Adding one is a line here, because the shape is already parameterized.
+    "STAX90": {"trigger": 0.90, "exit": None, "max_width": 0.20, "min_width": 0.05,
+               "crops": ("Cotton",),
+               "label": "STAX, 90% area loss trigger (upland cotton)"},
 }
+
+# 16-STAX-0021 §5(a)(1): "You must choose a protection factor: (1) From a range of 80 percent
+# to 120 percent". §5(e) applies it as the final multiplier on policy protection — it scales
+# LIABILITY DOLLARS, on both sides of every ratio computed here, so it cancels exactly out of
+# every probability and every share this module reports. It is recorded because it is the
+# single biggest lever on what a STAX miss COSTS, and omitting it from the docs would invite
+# someone to "correct" for it in a number that already has no dependence on it.
+PROTECTION_FACTOR_RANGE: tuple[float, float] = (0.80, 1.20)
+
+# MEASURED. STAX's area loss trigger election, acre-weighted, from sob_national plans 35/36
+# (RY2026; RY2025 and RY2024 both give 99.5-99.6% at 0.90 too). For plans 35/36 the Summary of
+# Business `coverage_level` column carries STAX's own TRIGGER, not the producer's deductible —
+# the same convention as ECO, and the opposite of SCO. That the only values it ever takes are
+# 0.75/0.80/0.85/0.90 is an independent confirmation of the §1 range from the sales side.
+STAX_TRIGGER_MIX: dict[float, float] = {0.75: 0.0040, 0.80: 0.0000,
+                                        0.85: 0.0005, 0.90: 0.9954}
 
 # ---------------------------------------------------------------------------
 # The PRODUCER's coverage level — their own deductible, the FARM side. Not the band's
@@ -566,17 +674,50 @@ def band_bounds(band: str, coverage_level: float) -> tuple[float, float]:
     election reaches across into the county side (Step 5b). So SCO86 is 1 point wide at a 0.85
     election, 11 at 0.75 and 21 at 0.65, and is refused outright at 0.86 and above, where there
     is literally nothing left to buy.
+
+    STAX slides like SCO but cannot slide past 20 points (`max_width`), and is void rather than
+    narrow below 5 points (`min_width`) — 16-STAX-0021 §1 and §10(b)(3). At the 0.90 trigger
+    that makes 0.65 and 0.70 elections identical (both exit at 0.70, the full 20-point range),
+    0.75 a 15-point band, 0.85 a 5-point band, and 0.90 void. See the module docstring.
+
+    The 5-point stepping in §10(b)(3)(i) is applied, not glossed: the coverage range is reduced
+    in whole 5-point increments, so a producer at an off-grid 0.78 gets a 10-point range
+    exiting at 0.80 — ABOVE their own deductible, leaving a 2-point gap they carry themselves.
+    Every level in COVERAGE_LEVELS is on the 5-point grid, so this only bites off-grid callers,
+    and it errs toward a narrower band, which is the conservative direction.
     """
     spec = BAND_SPECS.get(band)
     if spec is None:
         raise ValueError(f"unknown band {band!r}; known: {sorted(BAND_SPECS)}")
     trigger = spec["trigger"]
     exit_ = spec["exit"] if spec["exit"] is not None else coverage_level
-    if trigger - exit_ <= 0:
+    max_width = spec.get("max_width")
+    if max_width is not None:
+        # The elected range is capped AND quantized to 5-point steps, then the exit follows.
+        width = min(max_width, math.floor((trigger - exit_) / 0.05 + 1e-9) * 0.05)
+        exit_ = round(trigger - max(0.0, width), 10)
+    min_width = spec.get("min_width") or 0.0
+    width = trigger - exit_
+    if width <= 0 or width < min_width - 1e-9:
         raise ValueError(
             f"{band} has zero width at coverage level {coverage_level:.2f} "
-            f"(exit {exit_:.2f} >= trigger {trigger:.2f}) — there is nothing to buy")
+            f"(exit {exit_:.2f} >= trigger {trigger:.2f}) — there is nothing to buy"
+            + (f"; its minimum coverage range is {min_width:.0%}" if min_width else ""))
     return exit_, trigger
+
+
+def band_covers_crop(band: str, crop: str) -> bool:
+    """Is `band` actually sold on `crop`? STAX is upland cotton only (16-STAX-0021 §2(a)).
+
+    The builder asks this before writing a row. A STAX row for corn would not be a rough
+    estimate of anything — the product does not exist for corn — and `unknown` is the honest
+    output for a cell with no product in it.
+    """
+    spec = BAND_SPECS.get(band)
+    if spec is None:
+        raise ValueError(f"unknown band {band!r}; known: {sorted(BAND_SPECS)}")
+    crops = spec.get("crops")
+    return crops is None or crop in crops
 
 
 def basis_risk(
@@ -1155,6 +1296,11 @@ CLASS_PREFERENCE = {
     "Corn": ["ALL CLASSES"],
     "Soybeans": ["ALL CLASSES"],
     "Wheat": ["WINTER", "SPRING, (EXCL DURUM)", "SPRING, DURUM", "ALL CLASSES"],
+    # Cotton has NO 'ALL CLASSES' county series at all — NASS splits it UPLAND / PIMA and
+    # nothing else, so the generic default would silently match zero rows. UPLAND is also the
+    # only class STAX insures (16-STAX-0021 §2(a)); Pima is a different insured commodity (ADM
+    # 0022, Cotton Ex Long Staple) with 10 usable counties, and the loader drops it.
+    "Cotton": ["UPLAND"],
 }
 # ALL PRODUCTION PRACTICES is the default because it is the only practice with broad county
 # coverage. It is also a real limitation: RMA rates and settles SCO/ECO by TYPE AND PRACTICE,
@@ -1162,6 +1308,98 @@ CLASS_PREFERENCE = {
 # one used here. See docs/basis_risk.md, "What we could not determine".
 PRACTICE_PREFERENCE = ["ALL PRODUCTION PRACTICES", "NON-IRRIGATED", "IRRIGATED"]
 DEFAULT_UNIT = "BU / ACRE"
+
+# ---------------------------------------------------------------------------
+# UNITS — per crop, because they are NOT all bushels, and a mistake here is silent
+# ---------------------------------------------------------------------------
+# Read the "UNITS" section of the module docstring before touching any of this. The short
+# version: everything this module computes is a ratio to a fitted trend, so it is exactly
+# scale-invariant, so a wrong unit changes NO probability and cannot be caught downstream.
+#
+# `DEFAULT_UNIT` above stays 'BU / ACRE' for backwards compatibility with callers that pass a
+# unit explicitly or only ever ask about grain. Anything that resolves a unit FROM A CROP must
+# go through `yield_unit()` instead — a cotton query at the bushel default matches zero rows.
+CROP_YIELD_UNIT: dict[str, str] = {
+    "Corn": "BU / ACRE",
+    "Soybeans": "BU / ACRE",
+    "Wheat": "BU / ACRE",
+    "Cotton": "LB / ACRE",       # lint pounds. NOT bushels, and not bales either.
+}
+
+# The abandonment-inclusive variant of each, loaded as the robustness check (see the
+# nass_county_yield schema comment). For cotton this is the series that makes the whole guard
+# necessary: NASS's cotton 'LB / NET PLANTED ACRE' county values run 10-50x below its
+# 'LB / ACRE' ones, and a detrended CV cannot tell the two apart.
+CROP_PLANTED_YIELD_UNIT: dict[str, str] = {
+    "Corn": "BU / NET PLANTED ACRE",
+    "Soybeans": "BU / NET PLANTED ACRE",
+    "Wheat": "BU / NET PLANTED ACRE",
+    "Cotton": "LB / NET PLANTED ACRE",
+}
+
+# Physically possible MEAN yields, per crop, in that crop's unit. Deliberately WIDE — this is a
+# unit tripwire, not a plausibility model, and it must never reject a real county. The job is
+# only to separate a series from the one an order of magnitude away from it, so each band is
+# roughly a factor of 3 clear of the extremes actually observed in the NASS county data:
+#   corn      county means run ~25-250 bu/ac      soybeans ~10-80 bu/ac
+#   wheat     ~10-120 bu/ac                       cotton   ~150-1,800 lb/ac
+# A cotton series mistakenly read as bushels lands near 900 and is caught by the wheat-scale
+# ceiling only if the crop is known — which is exactly why this is keyed by crop.
+YIELD_SANITY: dict[str, tuple[float, float]] = {
+    "Corn": (5.0, 500.0),
+    "Soybeans": (3.0, 200.0),
+    "Wheat": (3.0, 300.0),
+    "Cotton": (50.0, 5_000.0),
+}
+
+
+def yield_unit(crop: str, *, planted: bool = False) -> str:
+    """The NASS unit `crop`'s yield is reported in. Raises for a crop with no declared unit.
+
+    Raising is the point. A crop that reaches the estimator without an entry here has never had
+    its unit checked by anybody, and defaulting it to bushels would load a plausible-looking
+    series at the wrong scale rather than stopping.
+    """
+    table = CROP_PLANTED_YIELD_UNIT if planted else CROP_YIELD_UNIT
+    try:
+        return table[crop]
+    except KeyError:
+        raise ValueError(
+            f"no yield unit declared for crop {crop!r}. Add it to basisrisk.CROP_YIELD_UNIT "
+            f"(and CROP_PLANTED_YIELD_UNIT) — do NOT let it default to {DEFAULT_UNIT!r}: "
+            "every metric in this module is scale-invariant, so the wrong unit would produce "
+            "a plausible answer instead of an error. Known: "
+            f"{sorted(CROP_YIELD_UNIT)}") from None
+
+
+def check_yield_unit(crop: str, mean_yield: float, unit: str | None = None) -> str | None:
+    """None if `mean_yield` is a physically possible mean for `crop`, else why not.
+
+    THE ONLY UNIT CHECK THAT CAN WORK. `mean_yield` is the single non-scale-invariant number
+    the estimator produces; cv, skew, miss_rate and every other output are identical under a
+    50x rescale of the input series. So a level check is not one option among several — it is
+    the only signal a unit error leaves behind. Never "improve" this into a CV check.
+
+    Returns a message rather than raising so the builder can count and report the rejects
+    alongside its other skip reasons instead of dying on one bad county.
+    """
+    want = CROP_YIELD_UNIT.get(crop)
+    if unit is not None and want is not None and unit != want:
+        return (f"{crop} series loaded in {unit!r}, but {crop} yields are reported in {want!r}. "
+                f"Refusing it: the detrended CV would look completely normal either way.")
+    band = YIELD_SANITY.get(crop)
+    if band is None:
+        return (f"no yield sanity band declared for {crop!r} — add one to "
+                "basisrisk.YIELD_SANITY before publishing it")
+    lo, hi = band
+    if not (lo <= mean_yield <= hi):
+        return (f"{crop} mean yield {mean_yield:,.1f} is outside the physically possible range "
+                f"{lo:,.0f}-{hi:,.0f} {want or ''}. This is almost always a UNIT mix-up "
+                f"(cotton and rice report LB/ACRE, grain reports BU/ACRE; NASS also carries a "
+                f"'NET PLANTED ACRE' series at a different scale). Note that the detrended CV "
+                f"and every probability derived from it are scale-invariant, so nothing "
+                f"downstream would have flagged this.")
+    return None
 
 # A county series must reach at least this recently to be scored. NASS county coverage has
 # been shrinking (corn counties reporting fell from ~1,670 in 2020 to ~1,210 in 2025), so a
@@ -1171,7 +1409,7 @@ DEFAULT_MIN_LAST_YEAR = 2018
 
 
 def load_series(conn, crop: str, loc_key: str, *, agg_level: str = "COUNTY",
-                unit: str = DEFAULT_UNIT, class_desc: str | None = None,
+                unit: str | None = None, class_desc: str | None = None,
                 practice: str | None = None, min_year: int | None = None,
                 max_year: int | None = None,
                 min_last_year: int | None = DEFAULT_MIN_LAST_YEAR):
@@ -1182,7 +1420,17 @@ def load_series(conn, crop: str, loc_key: str, *, agg_level: str = "COUNTY",
     Selection rule, in order: the series must still be LIVE (reach `min_last_year`), then the
     LONGEST such series wins, then the class-preference order breaks ties. Length alone is the
     wrong rule — see CLASS_PREFERENCE above for the wheat case that proves it.
+
+    `unit` defaults to THE CROP'S OWN unit (`yield_unit`), not to bushels. It used to default to
+    'BU / ACRE' for every crop, which was harmless while the only crops were grain and becomes
+    a trap the moment one of them is cotton. Note what the wrong default does here: `unit` is
+    in the WHERE clause, so a bushel query against cotton returns NOTHING and the county is
+    silently skipped — the crop just quietly fails to appear on the map. The far worse case is
+    a unit that MATCHES the wrong series; that one is caught by `check_yield_unit` downstream,
+    because nothing about a returned series' shape reveals its scale.
     """
+    if unit is None:
+        unit = yield_unit(crop)
     classes = [class_desc] if class_desc else CLASS_PREFERENCE.get(crop, ["ALL CLASSES"])
     practices = [practice] if practice else PRACTICE_PREFERENCE
     best = None

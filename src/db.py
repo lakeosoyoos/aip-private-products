@@ -914,6 +914,106 @@ CREATE TABLE IF NOT EXISTS basis_risk_county (
     PRIMARY KEY (crop, county_fips, band, plan_type, coverage_level)
 );
 CREATE INDEX IF NOT EXISTS idx_basis_risk_state ON basis_risk_county (state, crop, band);
+
+-- LGM (Livestock Gross Margin, plan 82) — the MARGIN leg, alongside LRP (price) and DRP
+-- (revenue). Populated by src/lgm.py. See that module's docstring for the citations.
+--
+-- THE KEY IS THE DEDUCTIBLE, NOT A COVERAGE LEVEL. This is the one plan in the catalog
+-- whose subsidy is not a function of a coverage level, and it is not a quirk of how we
+-- loaded it: ADM A00070 Subsidy Percent carries plan 82 under record category 05 keyed on
+-- `Deductible Amount`, with `Coverage Level Percent` blank on every row — while plan 81
+-- (LRP) uses category 08 keyed on Range Low/High Value and plan 83 (DRP) uses category 04
+-- keyed on Coverage Level Percent. A $0 deductible is NOT unsubsidised; it draws 18%, the
+-- bottom rung. The zero-subsidy case is UNPOOLED coverage (target marketings in only one
+-- month), which zeroes the subsidy at every deductible and is a property of the marketing
+-- plan, so it is recorded on lgm_deductible_curve rather than here.
+-- RY2026 and RY2027 ladders are identical value-for-value; the One Big Beautiful Bill Act
+-- changes RMA cites for 2027 land on the beginning-farmer add-on, not on this table.
+CREATE TABLE IF NOT EXISTS lgm_subsidy (
+    reinsurance_year INTEGER NOT NULL,
+    commodity_code  TEXT NOT NULL,     -- 0803 Cattle | 0815 Swine | 0847 Dairy Cattle
+    commodity_name  TEXT,
+    deductible      REAL NOT NULL,     -- $/head (cattle, swine) or $/cwt of milk (dairy)
+    subsidy_pct     REAL NOT NULL,     -- 0.18 .. 0.50, POOLED coverage only
+    source          TEXT,
+    fetched_at      TEXT,
+    PRIMARY KEY (reinsurance_year, commodity_code, deductible)
+);
+
+-- One LGM margin panel: expected gross margins and the published draw set for a
+-- (commodity, type, state) on one sales effective date, summarised. The full draw matrix
+-- is not stored — it is ~31 MB per file and is re-read from data/cache/lgm/ on demand.
+--
+-- n_draws IS 500, NOT 5,000. RMA's own "LGM-Cattle Premium Calculation" instructions
+-- (July 2020) specify i = 1..5,000 and divide by 5,000, but the published ADM member
+-- A00610 LgmDraw carries Margin Draw Number 1..500 for every commodity in both RY2026 and
+-- RY2027. src/lgm.py divides by the count it was handed and records it here so a premium
+-- computed off the public file can be read as the 500-draw estimate it is.
+--
+-- The ration columns are RMA's declared feed/animal quantities per unit of exposure, which
+-- is what LGM settles on instead of the operation's real feed bill. For cattle they come
+-- off the A00600 row itself (Corn / Live Cattle / Feeder Cattle Equivalent Default Value)
+-- and agree exactly with the handbook constants; for swine and dairy the ADM publishes the
+-- margin already netted of feed, so they come from the handbook.
+CREATE TABLE IF NOT EXISTS lgm_margin (
+    reinsurance_year INTEGER NOT NULL,
+    commodity_code  TEXT NOT NULL,
+    commodity_name  TEXT,
+    type_code       TEXT NOT NULL,     -- 807 Calf Finishing | 808 Yearling Finishing | ...
+    type_name       TEXT,
+    state_code      TEXT NOT NULL,     -- 2-digit FIPS; county is always 998 (statewide)
+    sales_effective_date TEXT NOT NULL,
+    months          TEXT,              -- comma-separated insured months actually populated
+    expected_margin_total REAL,        -- sum over months, per unit of exposure
+    expected_margin_mean  REAL,
+    n_draws         INTEGER,
+    draw_total_sd   REAL,              -- sd of the summed simulated margin, per unit
+    liability_price REAL,
+    ration_corn_bu  REAL,
+    ration_soybean_meal_ton REAL,
+    ration_feeder_cwt REAL,
+    ration_output_cwt REAL,
+    source          TEXT,
+    fetched_at      TEXT,
+    PRIMARY KEY (reinsurance_year, commodity_code, type_code, state_code,
+                 sales_effective_date)
+);
+
+-- The deductible curve: RMA's Monte Carlo premium re-run at every filed deductible with the
+-- marketing plan held fixed, so the row-to-row difference is the deductible alone.
+--
+-- WHY THE OPTIMUM IS INTERIOR. Raising the deductible raises the subsidy RATE but shrinks
+-- the premium BASE, and the rate stops rising once the ladder caps at 0.50 while the base
+-- keeps falling. net_expected_gain = total_premium * (1/1.03 - 1 + subsidy) therefore peaks
+-- strictly inside the grid. return_per_producer_dollar does NOT: it is 1/(1-subsidy) at
+-- rated experience, monotone in the subsidy, and blind to how little guarantee is left —
+-- which is why guarantee_retained is stored next to it. The two columns answer different
+-- questions and routinely disagree.
+--
+-- These numbers are FORWARD-LOOKING, off RMA's own rate draws. They cannot be backtested:
+-- sobtpu reports Coverage Level as '.0000' on every plan-82 row from crop year 2008 on, so
+-- realized loss ratio by deductible does not exist in any public RMA file.
+CREATE TABLE IF NOT EXISTS lgm_deductible_curve (
+    reinsurance_year INTEGER NOT NULL,
+    commodity_code  TEXT NOT NULL,
+    type_code       TEXT NOT NULL,
+    state_code      TEXT NOT NULL,
+    deductible      REAL NOT NULL,
+    subsidy_pct     REAL,
+    total_premium   REAL,              -- per unit of exposure, RMA Steps 1-5
+    producer_premium REAL,
+    expected_indemnity REAL,
+    net_expected_gain REAL,            -- E[indemnity] - producer premium
+    return_per_producer_dollar REAL,   -- loss_ratio / (1 - subsidy)
+    premium_stderr  REAL,              -- Monte Carlo SE of the 500-draw mean
+    expected_total_gross_margin REAL,
+    gross_margin_guarantee REAL,
+    guarantee_retained REAL,           -- GMG / EGM — the protection objective
+    pooled          INTEGER,           -- 1 = 2+ months of target marketings (subsidy > 0)
+    source          TEXT,
+    fetched_at      TEXT,
+    PRIMARY KEY (reinsurance_year, commodity_code, type_code, state_code, deductible)
+);
 """
 
 

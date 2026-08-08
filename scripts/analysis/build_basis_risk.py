@@ -35,6 +35,20 @@ producers who actually bought SCO. The default is now basisrisk.PUBLISHED_COVERA
 `coverage_level` is part of the primary key, so a caller SELECTs the level it wants.
 `--report` quantifies what the 0.85-only build was costing.
 
+CROPS AND BANDS ARE NOT A CROSS PRODUCT
+---------------------------------------
+STAX is upland cotton only (16-STAX-0021 §2(a)) and cotton is the only crop it is written for;
+SCO/ECO are written for all four. `basisrisk.band_covers_crop` decides, per crop, inside
+build(), so --bands can name every band unconditionally. A STAX row for corn would not be a
+rough estimate of a real product — there is no such product — and `unknown` is the honest
+output for a cell with nothing in it.
+
+Cotton also carries the pipeline's one silent failure mode: it is reported in LB / ACRE, not
+BU / ACRE. Every metric here is a ratio to a fitted trend and therefore scale-invariant, so a
+series loaded at the wrong scale yields an identical CV and identical probabilities. The build
+range-checks `mean_yield` -- the only non-scale-invariant number it computes -- against
+basisrisk.YIELD_SANITY and refuses the county. See src/basisrisk.py, section "UNITS".
+
 SPEED and SIZE. One simulated sample per (county, rho) serves every band AND every coverage
 level -- the draws do not depend on the deductible, only the thresholds do (basisrisk.draw_joint
 / metrics_from_draws), so a fifth coverage level costs five extra threshold comparisons over an
@@ -60,16 +74,24 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from src import basisrisk as B                                      # noqa: E402
 from src import config, db                                          # noqa: E402
 
-CROPS = ["Corn", "Soybeans", "Wheat"]
+CROPS = ["Corn", "Soybeans", "Wheat", "Cotton"]
 
-# Harvest-price volatility factor, per crop. MEASURED: these are the medians of the
-# "Price Volatility Factor" field in the 2026 ADM Price record (A00810), read out of
-# data/cache/adm/2026_A00810_Price_YTD.txt --
-#     corn (0041)  median 0.15, range 0.00-0.16   (n=227,796 rows)
-#     soybeans (0081) median 0.13, range 0.12-0.13 (n=351,498)
-#     wheat (0011) median 0.19, range 0.16-0.21    (n=116,166)
+# Harvest-price volatility factor, per crop. MEASURED from the "Price Volatility Factor" field
+# in the 2026 ADM Price record (A00810), data/cache/adm/2026_A00810_Price_YTD.txt.
+#
+#     corn     (0041)  0.15    soybeans (0081)  0.13
+#     wheat    (0011)  0.19    cotton   (0021)  0.13
+#
 # Only used for plan_type='RP'; the YP variants have no price leg at all.
-PRICE_VOL = {"Corn": 0.15, "Soybeans": 0.13, "Wheat": 0.19}
+#
+# TAKE THE MEDIAN OF THE NON-ZERO ROWS, NOT OF ALL ROWS. A00810 carries a 0.00 volatility row
+# alongside the real one for a large share of cells, and the share differs by crop: 25% of
+# corn's rows are zeros, but EXACTLY HALF of cotton's are (6,813 of 13,626). A plain median
+# therefore lands on 0.15 for corn — correct — and on 0.06 for cotton, which is the midpoint of
+# the zero/non-zero boundary and not a volatility factor at all. Cotton's actual published
+# distribution, plan 35 (STAX) rows: 0.12 x 108, 0.13 x 6,066, 0.14 x 639. Cross-check: the
+# cotton ARPI plans (05/06) carry no zero rows at all and are uniformly 0.13, n=672.
+PRICE_VOL = {"Corn": 0.15, "Soybeans": 0.13, "Wheat": 0.19, "Cotton": 0.13}
 
 # The single national parameter behind the natural hedge: how a national yield shortfall moves
 # the harvest price. ASSUMED. A county participates only through its own measured correlation
@@ -138,6 +160,12 @@ def build(conn, args) -> dict:
     dist: dict[tuple, list[float]] = defaultdict(list)
 
     for crop in args.crops:
+        # Which of the requested bands is actually SOLD on this crop. STAX is upland cotton
+        # only; a STAX row for corn would be an invention, not an estimate.
+        crop_bands = [b for b in bands if B.band_covers_crop(b, crop)]
+        if not crop_bands:
+            stats[f"{crop}: no requested band is sold on this crop"] += 1
+            continue
         nat = national_ratios(conn, crop, args.min_year, args.max_year, args.detrend)
         counties = [r[0] for r in conn.execute(
             "SELECT DISTINCT loc_key FROM nass_county_yield WHERE crop=? AND stat='YIELD' "
@@ -166,6 +194,21 @@ def build(conn, args) -> dict:
                 stats[f"{crop}: implausible CV"] += 1
                 continue
 
+            # THE UNIT TRIPWIRE. Everything above this line is scale-invariant: `fit.cv` is the
+            # SD of a ratio to the series' own trend, so a series loaded 50x off has exactly the
+            # CV it should and sails through the check above. `fit.mean_yield` is the only
+            # number here that carries a scale, so it is the only place a unit error is
+            # visible at all. Refuse the county rather than shipping a plausible-looking row.
+            # No `unit=` argument on purpose: load_series filters on the crop's own unit in SQL,
+            # so passing it back here would compare a value against itself and check nothing.
+            # The LEVEL is the only real signal, which is exactly the point.
+            bad_unit = B.check_yield_unit(crop, fit.mean_yield)
+            if bad_unit:
+                if stats[f"{crop}: implausible mean yield — UNIT?"] == 0:
+                    print(f"    WARNING {fips}: {bad_unit}", flush=True)
+                stats[f"{crop}: implausible mean yield — UNIT?"] += 1
+                continue
+
             meta = conn.execute(
                 "SELECT state, county_name FROM nass_county_yield WHERE crop=? AND stat='YIELD' "
                 "AND agg_level='COUNTY' AND loc_key=? LIMIT 1", (crop, fips)).fetchone()
@@ -177,16 +220,18 @@ def build(conn, args) -> dict:
                 continue
 
             # Empirical: how often would the index itself have fired, no model involved.
-            p_below = {b: float(np.mean(fit.ratio < B.BAND_SPECS[b]["trigger"])) for b in bands}
+            p_below = {b: float(np.mean(fit.ratio < B.BAND_SPECS[b]["trigger"]))
+                       for b in crop_bands}
 
             kw = dict(plan_type=args.plan_type, price_vol=price_vol,
                       corr_county_national=cn if cn is not None else 0.5,
                       corr_national_price=CORR_NATIONAL_PRICE, idio=args.idio,
                       n_draws=args.draws, seed=args.seed)
             draws = {r: B.draw_joint(fit.ratio, rho=r, **kw) for r in rhos}
-            boot = bootstrap_bands(fit, bands, levels, rhos[1], kw, args) if args.boot else {}
+            boot = (bootstrap_bands(fit, crop_bands, levels, rhos[1], kw, args)
+                    if args.boot else {})
 
-            for band in bands:
+            for band in crop_bands:
                 for cl in levels:
                     try:
                         m = {r: B.metrics_from_draws(
@@ -613,7 +658,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--db", default=str(config.DB_PATH))
     ap.add_argument("--crops", default=",".join(CROPS))
-    ap.add_argument("--bands", default="ECO95,ECO90,SCO86")
+    # STAX90 is requested for every crop and written only for cotton — band_covers_crop filters
+    # it per crop inside build(), so this default needs no per-crop special case.
+    ap.add_argument("--bands", default="ECO95,ECO90,SCO86,STAX90")
     ap.add_argument("--coverage-levels",
                     default=",".join(f"{x:.2f}" for x in B.PUBLISHED_COVERAGE_LEVELS),
                     help="the FARM's own MPCI coverage level(s) = its deductible. NOT the "
@@ -705,11 +752,17 @@ def main() -> int:
     if not args.dry_run:
         print("\n  REMINDER: nass_county_yield must be added to build_app_db.py's DROP_TABLES, "
               "and basis_risk_county to REQUIRED.")
-        # 373 bytes/row measured on the shipped table (data + PK index), so the coverage-level
-        # dimension is the one line item on this table's budget worth watching.
+        # 435 bytes/row MEASURED on the shipped table after VACUUM, counting the table plus BOTH
+        # its indexes (the PK autoindex and idx_basis_risk_state) — the same basis the app DB
+        # itself is measured on. The coverage-level dimension is this table's real budget line.
+        # Reference points: grain only x 5 levels = 74,025 rows / 32.2 MB -> app DB 85.7 MB;
+        # grain + cotton x 5 = 82,185 rows / 35.8 MB -> app DB 89.3 MB, which fits with 5.7 MB
+        # against the 95 MB budget. Cotton itself is +8,160 rows / +3.6 MB.
         print(f"  SIZE: {res['n']:,} rows across {len(args.coverage_levels)} coverage level(s) "
-              f"-> ~{res['n'] * 373 / 1e6:.0f} MB in the app DB. The app DB must stay under "
-              "95 MB; drop coverage levels first if it does not.")
+              f"-> ~{res['n'] * 435 / 1e6:.1f} MB in the app DB. It must stay under 95 MB; if it "
+              "does not, normalise the CL-invariant columns behind a view (17.2 MB for five "
+              "levels instead of 32.2 — see docs/basis_risk.md, 'Size discipline') before "
+              "dropping coverage levels, because the view costs no coverage.")
     conn.close()
     return 0
 

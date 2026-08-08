@@ -220,7 +220,17 @@ def _adm_files(stem: str, adm_dir: Path | None = None) -> list[Path]:
     adm_dir = Path(adm_dir or ADM_DIR)
     hits = sorted(p for p in adm_dir.glob(f"*{stem}*.txt"))
     if not hits:
-        raise FileNotFoundError(f"no {stem} member under {adm_dir}")
+        # This module READS the ADM cache and never populates it, so a bare "no member"
+        # traceback is a dead end. It was hit for real when A00810_Price (1.1 GB) went
+        # missing from the cache: the rates pass died halfway with no indication that the
+        # fix is a different command entirely. data/cache/ is gitignored, so a fresh clone
+        # starts in exactly this state. Name the remedy rather than just the symptom.
+        raise FileNotFoundError(
+            f"no {stem} member under {adm_dir}.\n"
+            f"src.prfbulk reads the ADM cache but does not download it. Populate it with:\n"
+            f"    .venv/bin/python -m src.refresh "
+            f"--source rma_adm,prf_adm --force --no-enrich\n"
+            f"then re-run this command.")
     return hits
 
 

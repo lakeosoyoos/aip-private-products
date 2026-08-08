@@ -246,26 +246,59 @@ def _xlsx_bytes(db_mtime: float) -> bytes:
 # the SERFF filing history — lives as a sub-section inside "Row Crop" rather
 # than as four sibling tabs competing with the product lines.
 def _tab_row_crop(mtime: float) -> None:
-    """Row-crop catalog: Map / Products / Stack / SERFF Filings as sub-tabs.
+    """Row-crop catalog: Map / My Farm / Products / Stack / SERFF Filings as sub-tabs.
 
     Nested st.tabs is intentional — each sub-section keeps its own full body,
-    and the widget keys inside them are namespaced (`rc_prod_*`, `rc_serff_*`)
-    so nesting can never raise DuplicateWidgetID against another product tab.
+    and the widget keys inside them are namespaced (`rc_prod_*`, `rc_serff_*`,
+    `rc_farm_*`) so nesting can never raise DuplicateWidgetID against another
+    product tab.
+
+    "My Farm" sits SECOND, directly after the map, because it is the only thing
+    in this whole tab that is about one operation rather than about a market.
+    Everything else here — including every basis-risk figure the map draws — is
+    county-typical, and county-typical rests on an assumed farm-to-county yield
+    correlation of 0.70 applied to every county in the country. That single
+    assumption moves the answer roughly 2x. A producer who reads ten years off
+    their own APH schedule replaces it with a measurement, which is the
+    difference between "counties like yours typically…" and "your farm".
     """
     st.subheader("Row crop")
     st.caption(
-        "The row-crop private/508(h) catalog — availability map, product table, "
-        "coverage-stack analysis, and the SERFF filing history behind it."
+        "The row-crop private/508(h) catalog — availability map, the per-farm "
+        "basis-risk calculator, product table, coverage-stack analysis, and the "
+        "SERFF filing history behind it."
     )
-    sub = st.tabs(["Map", "Products", "Stack", "SERFF Filings"])
+    sub = st.tabs(["Map", "My Farm", "Products", "Stack", "SERFF Filings"])
     with sub[0]:
         _tab_map(mtime)
     with sub[1]:
-        _tab_products(mtime)
+        _tab_farm()
     with sub[2]:
-        _tab_stack(mtime)
+        _tab_products(mtime)
     with sub[3]:
+        _tab_stack(mtime)
+    with sub[4]:
         _tab_serff(mtime)
+
+
+def _tab_farm() -> None:
+    """The per-farm basis-risk calculator (src/rowcroppage.render_farm_calculator).
+
+    The import is LAZY and the whole body is guarded, for the same reason the
+    LRP and DRP tabs are: this module pulls in numpy and the simulation code,
+    and a row-crop sub-tab must never be able to take the rest of the app down
+    with it. It also does no work at all until the producer enters a series, so
+    opening the tab costs one small query against basis_risk_county.
+    """
+    try:
+        from src.rowcroppage import render_farm_calculator
+    except Exception as exc:                            # pragma: no cover - import guard
+        st.error(f"The farm calculator could not be loaded: {exc}")
+        return
+    try:
+        render_farm_calculator()
+    except Exception as exc:
+        st.error(f"The farm calculator could not be rendered: {exc}")
 
 
 def _tab_map(mtime: float) -> None:

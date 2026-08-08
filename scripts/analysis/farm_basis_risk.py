@@ -230,8 +230,13 @@ def main() -> int:
         except ValueError as exc:
             print(f"\n{band}: skipped — {exc}")
             continue
+        # BOTH sequences must be in the SAME year order. list(farm) yields dict INSERTION
+        # order while the comprehension below yields SORTED order, so `--yields
+        # 2018:165,2016:178` silently paired 2018 with 178 and 2016 with 165 — a mis-pairing
+        # that produces a plausible wrong correlation rather than an error.
+        farm_years = sorted(farm)
         r = B.farm_basis_risk(
-            list(farm), [farm[y] for y in sorted(farm)], years, values,
+            farm_years, [farm[y] for y in farm_years], years, values,
             crop=args.crop, county_fips=args.county, band=band,
             coverage_level=args.coverage_level, detrend_method=args.detrend,
             farm_detrend=args.farm_detrend, plan_type=args.plan_type,

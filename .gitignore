@@ -36,6 +36,10 @@ __pycache__/
 # Keep the output/ directory (via .gitkeep) but not the generated workbooks or lock files.
 output/*.xlsx
 output/~$*.xlsx
+# Transient run logs from the rebuild/monthly scripts — machine-specific timings and
+# progress counters, regenerated on every run and of no value in history.
+output/*.log
+output/monthly_log.txt
 
 # --- LRP Signal (lrp_signal.py writes next to itself) ---
 # HTTP cache of RMA rate files and CME quotes — re-fetchable, auto-created.

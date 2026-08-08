@@ -119,6 +119,88 @@ def test_unknown_band_is_refused():
         B.band_bounds("ECO99", 0.85)
 
 
+# ── Coverage levels: the producer's deductible, not the band's trigger ───────
+#
+# The whole point of this block is that TWO different percentages are called "coverage level"
+# and they enter the joint distribution on opposite sides (src/basisrisk.py, Step 5b). The
+# band's TRIGGER is compared against the county; the producer's ELECTION is compared against
+# the farm. Getting them the wrong way round inverts every conclusion, so the direction is
+# pinned here rather than described.
+
+def test_published_levels_are_real_rma_elections():
+    assert set(B.PUBLISHED_COVERAGE_LEVELS) <= set(B.COVERAGE_LEVELS)
+    assert B.MODAL_COVERAGE_LEVEL in B.PUBLISHED_COVERAGE_LEVELS
+    assert list(B.PUBLISHED_COVERAGE_LEVELS) == sorted(B.PUBLISHED_COVERAGE_LEVELS)
+    # RMA sells buy-up in 5-point steps from 0.50 to 0.85. Anything else is not a policy.
+    assert B.COVERAGE_LEVELS == (0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85)
+
+
+def test_cl_key_makes_arithmetic_and_literals_the_same_row():
+    assert B.cl_key(0.7000000001) == B.cl_key(0.70) == 0.70
+    assert B.cl_key(0.65 + 1e-12) == 0.65
+
+
+def test_nearest_published_level_snaps_up_not_to_nearest():
+    """Snapping UP over-states basis risk, which is the safe direction.
+
+    0.71 is nearer 0.70 than 0.75, and we still go up: the rule is never to quote a producer a
+    LOWER miss rate than the grid can support for them.
+    """
+    assert B.nearest_published_level(0.50) == 0.65
+    assert B.nearest_published_level(0.60) == 0.65
+    assert B.nearest_published_level(0.71) == 0.75      # nearest would be 0.70 — we go up
+    assert B.nearest_published_level(0.75) == 0.75      # already on the grid: unchanged
+    assert B.nearest_published_level(0.90) == 0.85      # clamps to the worst case
+
+
+@pytest.mark.parametrize("mix", [B.ELECTION_MIX, B.SCO_ELECTION_MIX])
+def test_election_mixes_are_distributions_over_real_elections(mix):
+    for crop, m in mix.items():
+        assert set(m) <= set(B.COVERAGE_LEVELS), crop
+        assert sum(m.values()) == pytest.approx(1.0, abs=0.005), crop
+        assert all(v >= 0 for v in m.values()), crop
+
+
+def test_the_top_election_is_a_small_minority_of_the_book():
+    """The measured claim the whole coverage-level change rests on, kept beside the constants."""
+    assert B.ELECTION_MIX["ALL"][0.85] < 0.20
+    assert B.SCO_ELECTION_MIX["ALL"][0.85] < 0.05
+    assert max(B.SCO_ELECTION_MIX["ALL"], key=B.SCO_ELECTION_MIX["ALL"].get) == 0.75
+    assert B.SHARE_AT_MAX_LEVEL == B.ELECTION_MIX["ALL"][0.85]
+    assert B.SHARE_AT_MAX_LEVEL_SCO == B.SCO_ELECTION_MIX["ALL"][0.85]
+
+
+def test_election_weights_lose_no_acres_off_the_grid():
+    w = B.election_weights("Corn", book="all")
+    assert set(w) == set(B.PUBLISHED_COVERAGE_LEVELS)
+    assert sum(w.values()) == pytest.approx(1.0)
+    # The sub-0.65 tail is folded UP into 0.65, not dropped.
+    raw = B.ELECTION_MIX["Corn"]
+    assert w[0.65] == pytest.approx(raw[0.50] + raw[0.55] + raw[0.60] + raw[0.65], abs=1e-9)
+
+
+def test_election_weights_fall_back_to_the_all_crop_mix():
+    assert B.election_weights("Sunflowers") == B.election_weights("ALL")
+
+
+def test_blend_sits_between_the_extremes_and_near_the_mode():
+    by_cl = {0.65: 0.02, 0.70: 0.03, 0.75: 0.05, 0.80: 0.09, 0.85: 0.13}
+    blend = B.blend_over_coverage_levels(by_cl, "Corn", book="sco")
+    assert min(by_cl.values()) < blend < max(by_cl.values())
+    # Half of SCO buyers sit at 0.75, so the blend must land much nearer 0.75 than 0.85.
+    assert abs(blend - by_cl[0.75]) < abs(blend - by_cl[0.85])
+
+
+def test_blend_ignores_missing_levels_rather_than_returning_nan():
+    assert B.blend_over_coverage_levels({0.75: 0.05, 0.85: None}) == pytest.approx(0.05)
+    assert math.isnan(B.blend_over_coverage_levels({}))
+
+
+def test_unknown_election_book_is_refused():
+    with pytest.raises(ValueError):
+        B.election_weights("Corn", book="everyone")
+
+
 # ── The two limits that define the metric ────────────────────────────────────
 
 def _county_sample(n=200_000, cv=0.18, seed=3):
@@ -190,6 +272,63 @@ def test_sco_misses_more_often_than_eco():
     sco = B.basis_risk(c, rho=0.70, coverage_level=0.75, band="SCO86", n_draws=80_000, seed=5)
     assert sco.miss_rate > eco.miss_rate
     assert sco.p_band_pays < eco.p_band_pays
+
+
+def test_a_lower_producer_coverage_level_misses_less():
+    """THE direction test for the coverage-level dimension. Monotone, on every band.
+
+    A LOWER election is a BIGGER deductible, so the losses that qualify as "a farm loss" are
+    fewer and DEEPER — and a deep farm loss is far more likely to have come from weather the
+    whole county shared, which is exactly when the county index fires. So miss_rate FALLS as
+    the election falls.
+
+    This is the sign that decides whether the shipped 0.85-only table was over- or
+    under-discounting the opportunity map. It over-discounts: 0.85 is the top of the grid and
+    therefore the worst case, while the book's mode is 0.75.
+    """
+    c = _county_sample(n=20_000)
+    for band in ("ECO95", "ECO90", "SCO86"):
+        rates = [B.basis_risk(c, band=band, coverage_level=cl, rho=0.70,
+                              n_draws=80_000, seed=5).miss_rate
+                 for cl in B.PUBLISHED_COVERAGE_LEVELS]
+        assert rates == sorted(rates), (band, rates)
+        assert rates[-1] > rates[0] + 0.05, (band, rates)   # and it is a material spread
+
+
+def test_the_joint_annual_frequency_of_a_hard_miss_falls_too():
+    """miss_rate is a conditional; p_hard_miss is the unconditional. Both must move together."""
+    c = _county_sample(n=20_000)
+    ms = [B.basis_risk(c, coverage_level=cl, rho=0.70, n_draws=80_000, seed=5)
+          for cl in B.PUBLISHED_COVERAGE_LEVELS]
+    assert [m.p_hard_miss for m in ms] == sorted(m.p_hard_miss for m in ms)
+    assert [m.p_farm_loss for m in ms] == sorted(m.p_farm_loss for m in ms)
+
+
+def test_the_producer_level_never_touches_the_county_side_of_an_eco_band():
+    """ECO's exit is fixed at 0.86, so its purely county-side outputs cannot move with CL.
+
+    This is the mechanical proof of Step 5b's claim about which side each percentage lives on.
+    SCO is the exception — its exit IS the producer's level — so the same quantities must move
+    there, and the second half asserts that too. If a future change makes the ECO numbers move,
+    something has leaked from the farm side into the county side.
+    """
+    d = B.draw_joint(_county_sample(n=20_000), rho=0.70, n_draws=60_000, seed=5)
+    county_side = ("p_band_pays", "uncovered_share", "payout_corr",
+                   "expected_payment_per_dollar")
+
+    ref = None
+    for cl in B.PUBLISHED_COVERAGE_LEVELS:
+        m = B.metrics_from_draws(d.farm_ratio, d.county_ratio, band="ECO95", coverage_level=cl)
+        got = tuple(getattr(m, k) for k in county_side)
+        if ref is None:
+            ref = got
+        assert got == pytest.approx(ref), cl
+        assert m.trigger == 0.95 and m.exit == 0.86
+
+    sco = [B.metrics_from_draws(d.farm_ratio, d.county_ratio, band="SCO86", coverage_level=cl)
+           for cl in (0.65, 0.85)]
+    assert sco[0].exit == 0.65 and sco[1].exit == 0.85          # the exit IS the election
+    assert sco[0].expected_payment_per_dollar != sco[1].expected_payment_per_dollar
 
 
 def test_skewed_idiosyncratic_raises_basis_risk_above_normal():
@@ -522,3 +661,180 @@ def test_precomputed_table_is_internally_consistent():
     assert conn.execute(
         "SELECT COUNT(*) FROM basis_risk_county WHERE grade NOT IN ('A','B','C')"
     ).fetchone()[0] == 0
+    # Every coverage level in the table must be a real RMA buy-up election, and if more than
+    # one was built the direction must hold in the DATA, not only in the simulator: a lower
+    # election is a bigger deductible, so it must not show MORE basis risk.
+    levels = sorted(B.cl_key(r[0]) for r in conn.execute(
+        "SELECT DISTINCT coverage_level FROM basis_risk_county") if r[0] is not None)
+    assert levels and set(levels) <= set(B.COVERAGE_LEVELS), levels
+    for lo, hi in zip(levels, levels[1:]):
+        inverted = conn.execute(
+            """SELECT COUNT(*) FROM basis_risk_county a JOIN basis_risk_county b
+                 ON a.crop=b.crop AND a.county_fips=b.county_fips AND a.band=b.band
+                AND a.plan_type=b.plan_type
+               WHERE a.coverage_level=? AND b.coverage_level=?
+                 AND a.miss_rate > b.miss_rate + 0.02""", (lo, hi)).fetchone()[0]
+        assert inverted == 0, f"CL {lo} shows more basis risk than CL {hi} in {inverted} rows"
+
+
+# ── The builder, end to end, on a synthetic county history ──────────────────
+
+def _fixture_db(tmp_path, counties=3, seed=17):
+    """A minimal working DB: nass_county_yield with a few trended, noisy corn counties.
+
+    Small enough to run in a test and complete enough to exercise the real build path —
+    series selection, detrending, the national correlation, the multi-level write and the
+    primary key. The estimator's real input table is 2.5M rows; this is the same shape.
+    """
+    from src import db as dbmod
+
+    path = tmp_path / "fixture.db"
+    conn = dbmod.connect(path)
+    dbmod.init_db(conn)
+    rng = np.random.default_rng(seed)
+    years = list(range(1975, 2026))
+    rows = []
+    nat = np.zeros(len(years))
+    for i in range(counties):
+        base, slope, cv = 90.0 + 10 * i, 1.6 + 0.1 * i, 0.10 + 0.03 * i
+        shock = rng.standard_normal(len(years))
+        nat += shock / counties
+        for j, y in enumerate(years):
+            v = (base + slope * (y - 1975)) * (1 + cv * shock[j])
+            rows.append(("Corn", "YIELD", "ALL CLASSES", "ALL PRODUCTION PRACTICES", "BU / ACRE",
+                         "COUNTY", f"1900{i}", "IA", f"1900{i}", "10", f"County {i}", y,
+                         max(5.0, v), "fixture", "2026-01-01"))
+    for j, y in enumerate(years):
+        rows.append(("Corn", "YIELD", "ALL CLASSES", "ALL PRODUCTION PRACTICES", "BU / ACRE",
+                     "NATIONAL", "US", None, None, None, None, y,
+                     (100 + 1.7 * (y - 1975)) * (1 + 0.07 * nat[j]), "fixture", "2026-01-01"))
+    conn.executemany(
+        "INSERT OR REPLACE INTO nass_county_yield (crop, stat, class_desc, practice, unit, "
+        "agg_level, loc_key, state, county_fips, asd_code, county_name, year, value, source, "
+        "fetched_at) VALUES (" + ",".join("?" * 15) + ")", rows)
+    conn.commit()
+    return conn
+
+
+class _Args:
+    """Stand-in for the argparse namespace build() reads."""
+    def __init__(self, **kw):
+        self.crops = ["Corn"]
+        self.bands = ["ECO95", "SCO86"]
+        self.coverage_levels = [0.70, 0.80, 0.85]
+        self.plan_type = "RP"
+        self.detrend = "ols"
+        self.rho, self.rho_lo, self.rho_hi = B.RHO_REF, B.RHO_LO, B.RHO_HI
+        self.idio = "normal"
+        self.draws = 20_000
+        self.boot = 0
+        self.boot_draws = 2_000
+        self.min_year, self.max_year = 1975, 2025
+        self.seed = 7
+        self.limit = None
+        self.progress = 0
+        self.dry_run = False
+        self.__dict__.update(kw)
+
+
+def _builder():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "build_basis_risk", REPO / "scripts" / "analysis" / "build_basis_risk.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_builder_writes_one_row_per_coverage_level_and_keys_them(tmp_path):
+    """The schema change, exercised: coverage_level is part of the key, not a build constant."""
+    conn = _fixture_db(tmp_path)
+    res = _builder().build(conn, _Args())
+    assert res["n"] == 3 * 2 * 3                    # counties x bands x coverage levels
+    got = [tuple(r) for r in conn.execute(
+        "SELECT band, coverage_level, COUNT(*) FROM basis_risk_county GROUP BY 1,2 "
+        "ORDER BY 1,2")]
+    assert got == [("ECO95", 0.70, 3), ("ECO95", 0.80, 3), ("ECO95", 0.85, 3),
+                   ("SCO86", 0.70, 3), ("SCO86", 0.80, 3), ("SCO86", 0.85, 3)]
+    # A rebuild must replace, not accumulate — coverage_level is in the PRIMARY KEY.
+    _builder().build(conn, _Args())
+    assert conn.execute("SELECT COUNT(*) FROM basis_risk_county").fetchone()[0] == 18
+
+
+def test_builder_output_falls_with_the_producer_coverage_level(tmp_path):
+    """The same direction as the estimator test, but measured on written rows."""
+    conn = _fixture_db(tmp_path)
+    _builder().build(conn, _Args())
+    for band in ("ECO95", "SCO86"):
+        for fips in ("19000", "19001", "19002"):
+            rates = [r[0] for r in conn.execute(
+                "SELECT miss_rate FROM basis_risk_county WHERE band=? AND county_fips=? "
+                "ORDER BY coverage_level", (band, fips))]
+            assert len(rates) == 3
+            assert rates == sorted(rates), (band, fips, rates)
+
+
+def test_builder_refuses_a_degenerate_sco_band_instead_of_writing_a_zero(tmp_path):
+    """SCO has no width at or above 0.86. That must be a skipped row with a reason, not a 0."""
+    conn = _fixture_db(tmp_path)
+    args = _Args(bands=["SCO86", "ECO95"], coverage_levels=[0.75, 0.85, 0.86])
+    res = _builder().build(conn, args)
+    assert conn.execute("SELECT COUNT(*) FROM basis_risk_county "
+                        "WHERE band='SCO86' AND coverage_level=0.86").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM basis_risk_county "
+                        "WHERE band='ECO95' AND coverage_level=0.86").fetchone()[0] == 3
+    assert any("degenerate" in k for k in res["stats"]), res["stats"]
+
+
+def test_builder_carries_the_rho_sensitivity_at_every_coverage_level(tmp_path):
+    """rho is the single biggest uncertainty; the new dimension must not drop its band."""
+    conn = _fixture_db(tmp_path)
+    _builder().build(conn, _Args())
+    rows = conn.execute(
+        "SELECT coverage_level, rho_lo, miss_rate_rho_lo, rho_ref, miss_rate, rho_hi, "
+        "miss_rate_rho_hi FROM basis_risk_county").fetchall()
+    assert rows
+    for cl, rlo, mlo, rref, m, rhi, mhi in rows:
+        assert (rlo, rref, rhi) == (B.RHO_LO, B.RHO_REF, B.RHO_HI)
+        assert mlo >= m >= mhi - 1e-9, cl      # less correlation, more basis risk
+
+
+def test_report_pins_to_the_modal_election_not_the_top_of_the_grid(tmp_path, capsys):
+    """Regression: the summary loop used to rebind `cl` and silently drag the drill-downs to 0.85.
+
+    The whole point of the change is that the report stops standing on the worst-case corner, so
+    the level it actually prints is worth a test rather than an eyeball.
+    """
+    conn = _fixture_db(tmp_path, counties=2)
+    mod = _builder()
+    mod.build(conn, _Args(coverage_levels=[0.70, 0.75, 0.85], bands=["ECO95"]))
+
+    class _RArgs:
+        at_coverage_level = None
+    assert mod.report_coverage_level(conn, _RArgs()) == B.MODAL_COVERAGE_LEVEL
+
+    _RArgs.at_coverage_level = 0.70
+    assert mod.report_coverage_level(conn, _RArgs()) == 0.70
+
+    mod.report(conn, _RArgs())
+    out = capsys.readouterr().out
+    assert "CL 0.70" in out and "COVERAGE-LEVEL BIAS" in out
+
+
+def test_report_says_so_when_only_one_coverage_level_was_built(tmp_path, capsys):
+    conn = _fixture_db(tmp_path, counties=2)
+    mod = _builder()
+    mod.build(conn, _Args(coverage_levels=[0.85], bands=["ECO95"]))
+    mod.coverage_level_bias(conn)
+    out = capsys.readouterr().out
+    assert "only one coverage level" in out and "--coverage-levels" in out
+
+
+def test_builder_records_data_grade_not_risk(tmp_path):
+    """`grade` must stay a statement about years of history."""
+    conn = _fixture_db(tmp_path)
+    _builder().build(conn, _Args())
+    for grade, n_years in conn.execute(
+            "SELECT DISTINCT grade, n_years FROM basis_risk_county"):
+        assert grade == B.grade_for(n_years)
+        assert grade == "A"                    # the fixture gives every county 51 years

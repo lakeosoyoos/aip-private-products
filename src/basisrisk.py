@@ -95,6 +95,48 @@ Step 5 — THE METRICS. At the producer's own coverage level CL and the band's t
 a transfer, not insurance, and they are exactly the dollars that were not there in the years the
 loss came and the cheque did not.
 
+Step 5b — THERE ARE TWO COVERAGE LEVELS IN THIS MODEL AND THEY LIVE ON OPPOSITE SIDES
+=====================================================================================
+This is the single easiest thing to get wrong here, so it gets its own step. Two different
+percentages both get called "coverage level" in the trade, and they enter the joint
+distribution in different places:
+
+  1. THE BAND'S TRIGGER — 0.95 / 0.90 / 0.86 (ECO95 / ECO90 / SCO86). RMA's number, fixed by
+     the endorsement the producer elects, applied to the COUNTY index. It is the `band`
+     argument, it lives in BAND_SPECS, and it is the COUNTY side of the joint distribution:
+     `pays := county_ratio < trigger`. The producer's own election does not move it.
+
+  2. THE PRODUCER'S OWN MPCI COVERAGE LEVEL — 0.50 to 0.85 in 5-point steps, their DEDUCTIBLE
+     on their individual policy. It is the `coverage_level` argument and it is the FARM side:
+     `farm loss := farm_ratio < coverage_level`. It defines what counts as a loss worth
+     insuring against, i.e. what the miss_rate is conditioned ON. It never touches the county
+     index.
+
+    +-- county side (MEASURED) ------+       +-- farm side (MODELLED) -----------+
+    |  county_ratio < band trigger   |       |  farm_ratio < coverage_level      |
+    |  trigger = 0.95 / 0.90 / 0.86  |       |  coverage_level = 0.50 ... 0.85   |
+    +--------------------------------+       +-----------------------------------+
+                miss_rate  =  P( NOT county side | farm side )
+
+  THE ONE EXCEPTION, and it is real: SCO EXITS AT THE PRODUCER'S OWN COVERAGE LEVEL. ECO's band
+  is 0.86 -> trigger no matter who buys it, but SCO runs from 0.86 DOWN to the underlying
+  election, so for SCO — and only SCO — the producer's level ALSO sets the county-side band's
+  lower bound and therefore the band's width and its payment schedule. At CL 0.85 SCO is one
+  coverage point wide; at CL 0.65 it is twenty-one. See `band_bounds`.
+
+DIRECTION, because it is counter-intuitive at first reading. A LOWER producer coverage level
+means a BIGGER deductible, so the farm losses that qualify are RARER and DEEPER — and a deep
+farm loss is much more likely to have come from weather the whole county shared, which is
+exactly when the county index fires. So:
+
+    lower producer coverage level  ->  fewer qualifying farm losses  ->  LOWER miss_rate
+
+Measured on a typical Corn Belt county (county CV 0.12, rho 0.70, RP), ECO95 miss_rate runs
+13.1% at CL 0.85, 9.0% at 0.80, 5.5% at 0.75, 3.2% at 0.70, 1.7% at 0.65. SCO86 runs 42.9% /
+34.6% / 25.9% / 18.2% / 12.2% over the same grid. The 0.85 end is the WORST case in the whole
+grid, and it is what the shipped table used to be built at alone — see PUBLISHED_COVERAGE_LEVELS
+and ELECTION_MIX below for what producers actually buy.
+
 Step 6 — UNCERTAINTY. A county with 12 usable years supports a far weaker claim than one with
 40. `bootstrap_miss_rate()` resamples YEARS (not draws), refits the trend on each resample and
 re-runs the estimator, so the reported interval carries the shortness of the series. Counties
@@ -112,18 +154,33 @@ docs/rowcrop_opportunity.md:
     SCO86 / ECO90 / ECO95, because basis risk depends on the trigger. ECO maps to ECO95 (99.0%
     of the RY2026 ECO book elects the 95% trigger). MCO and STAX map to NOTHING — see below —
     and are carried as an explicit `unknown`, never as a borrowed neighbour's number.
-  * COVERAGE LEVEL. `coverage_level` here is the FARM's own deductible, which is what defines
-    "a farm loss". The shipped build is 0.85 only, which is the highest common election and so
-    the HIGHEST miss rate: re-running basis_risk() on the same series at 0.75 roughly halves
-    the ECO95 miss rate, and 88% of the RY2026 book insures below 0.85. Any adjustment built on
-    the shipped rows is therefore CONSERVATIVE. Building --coverage-levels 0.70 0.75 0.80 0.85
-    and joining on the county's own modal election is the fix.
+  * COVERAGE LEVEL. `coverage_level` here is the FARM's own deductible (Step 5b), which is what
+    defines "a farm loss". The table is now built across PUBLISHED_COVERAGE_LEVELS — 0.65, 0.70,
+    0.75, 0.80, 0.85 — and `coverage_level` is part of its primary key, so a caller SELECTs the
+    level it wants. It used to be built at 0.85 alone, which is the highest common election and
+    therefore the HIGHEST miss rate in the grid; on the measured RY2025 election mix that
+    over-stated the discount by a wide margin (see ELECTION_MIX). A consumer that still reads
+    0.85 is being CONSERVATIVE, not wrong — it under-states opportunity. A consumer that wants
+    the typical producer should read MODAL_COVERAGE_LEVEL, and one that wants the book should
+    blend with `election_weights()`.
 
 WHAT THIS MODULE DOES NOT DO
 ============================
-* It does not model MCO's margin trigger (input costs) — MCO is treated as an area revenue
-  band, which understates its basis risk, since input-cost basis is an extra layer. No MCO
-  rows are written at all, so a consumer sees `unknown` rather than an understatement.
+* MCO. NOT MODELLED, and not because nobody got to it. MCO settles on a county MARGIN —
+  expected crop value less an input-cost index of diesel, natural gas, urea, DAP and potash
+  (26-MCO §1; docs/rowcrop_endorsement_stacking.md §3.3). That is a THIRD leg in the joint
+  distribution, not a re-parameterization of the two here, and the leg has no history: RMA
+  publishes the Expected Margin Amount per county in the ADM (record A00810), but MCO's first
+  reinsurance year is 2026, so there is exactly ONE observation of it. Treating MCO as an area
+  revenue band would look like an answer and be a guess in the wrong direction — the input-cost
+  leg is national, like price, so it cannot miss anybody, while a farm's OWN input costs can
+  and do differ from the index. No MCO rows are written; consumers see `unknown`.
+  docs/basis_risk.md §8 sets out exactly what an MCO estimator would need.
+* STAX. Not modelled either, but for a much smaller reason: it is a plain county REVENUE
+  trigger (90% down to 75%, up to a 20-point range — 23-STAX-0021 §1) and the machinery here
+  already handles that shape. What is missing is upland COTTON in nass_county_yield; the
+  connector's COMMODITIES map stops at corn, soybeans and wheat. Add cotton and STAX is a
+  BAND_SPECS entry, not a research project.
 * It does not model prevented planting, replant, or the quality adjustments that can make a
   farm's insurable loss differ from its yield loss.
 * It has no farm-level data anywhere in it. See the honesty block above.
@@ -148,6 +205,75 @@ BAND_SPECS: dict[str, dict] = {
     "SCO86": {"trigger": 0.86, "exit": None, "label": "SCO (exits at the underlying level)"},
 }
 
+# ---------------------------------------------------------------------------
+# The PRODUCER's coverage level — their own deductible, the FARM side. Not the band's
+# trigger, which is RMA's and lives in BAND_SPECS above. See Step 5b of the module docstring.
+# ---------------------------------------------------------------------------
+# Every buy-up election RMA offers on the underlying MPCI policy (7 CFR 457.8 §3(c); the
+# actuarials publish 0.50-0.85 in 5-point steps). CAT is 0.50 of a 55% price election and is a
+# different animal — a CAT producer cannot buy SCO or ECO at all, so CAT is excluded from the
+# election mixes below.
+COVERAGE_LEVELS: tuple[float, ...] = (0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85)
+
+# The grid the shipped table is BUILT at. Five levels covering 95.0% of RY2025 corn/soybean/
+# wheat buy-up acres and 95.2% of the acres of producers who actually bought SCO. The three
+# levels below 0.65 are omitted on purpose: together they are 5.0% of the book, and snapping
+# them up to 0.65 (`nearest_published_level`) over-states their basis risk, which is the safe
+# direction. Each extra level costs ~5.3 MB in the shipped app DB (measured), so this is a
+# budget decision as well as a modelling one — see docs/basis_risk.md, "Size discipline".
+PUBLISHED_COVERAGE_LEVELS: tuple[float, ...] = (0.65, 0.70, 0.75, 0.80, 0.85)
+
+# The single level to quote when only one number fits: the MODE of the election distribution,
+# not the maximum. 35.6% of RY2025 corn/soy/wheat buy-up acres and 50.7% of SCO buyers' acres.
+MODAL_COVERAGE_LEVEL = 0.75
+
+# MEASURED election mixes. Source: sob_national (RMA Summary of Business, national rollup),
+# reinsurance year 2025 — the last year with a complete sales season; 2026 is still filling.
+# Acre-weighted (`net_acres`). Reproduce with:
+#     .venv/bin/python scripts/analysis/build_basis_risk.py --election-mix
+#
+# ELECTION_MIX is the WHOLE underlying book: plan codes 01/02/03 (YP / RP / RP-HPE),
+# coverage_type 'A' (buy-up). This is who COULD buy an endorsement.
+ELECTION_MIX: dict[str, dict[float, float]] = {
+    "Corn":     {0.50: 0.0222, 0.55: 0.0022, 0.60: 0.0215, 0.65: 0.0251,
+                 0.70: 0.1249, 0.75: 0.3423, 0.80: 0.2964, 0.85: 0.1654},
+    "Soybeans": {0.50: 0.0287, 0.55: 0.0027, 0.60: 0.0230, 0.65: 0.0222,
+                 0.70: 0.1129, 0.75: 0.3456, 0.80: 0.3050, 0.85: 0.1600},
+    "Wheat":    {0.50: 0.0113, 0.55: 0.0012, 0.60: 0.0371, 0.65: 0.0578,
+                 0.70: 0.3159, 0.75: 0.4120, 0.80: 0.1165, 0.85: 0.0482},
+    "ALL":      {0.50: 0.0227, 0.55: 0.0022, 0.60: 0.0249, 0.65: 0.0299,
+                 0.70: 0.1549, 0.75: 0.3561, 0.80: 0.2671, 0.85: 0.1422},
+}
+
+# SCO_ELECTION_MIX is the sharper number and the one to prefer for an endorsement question.
+# For plan codes 31/32/33 the Summary of Business reports coverage_level as the UNDERLYING
+# policy's level, not SCO's 0.86 attachment — so this is a DIRECT measurement of the deductible
+# carried by people who actually bought an area band, no inference required. It is available
+# only for SCO: for ECO (87/88/89) and MCO (67/68/69) the same field carries the endorsement's
+# own TRIGGER (0.90/0.95), so an ECO buyer's underlying level is not observable in the national
+# rollup at all. SCO buyers are the best available proxy for ECO buyers.
+SCO_ELECTION_MIX: dict[str, dict[float, float]] = {
+    "Corn":     {0.50: 0.0302, 0.55: 0.0042, 0.60: 0.0383, 0.65: 0.0107,
+                 0.70: 0.1303, 0.75: 0.4763, 0.80: 0.2836, 0.85: 0.0262},
+    "Soybeans": {0.50: 0.0117, 0.55: 0.0030, 0.60: 0.0302, 0.65: 0.0107,
+                 0.70: 0.1096, 0.75: 0.5143, 0.80: 0.2840, 0.85: 0.0365},
+    "Wheat":    {0.50: 0.0073, 0.55: 0.0002, 0.60: 0.0118, 0.65: 0.0273,
+                 0.70: 0.2642, 0.75: 0.5397, 0.80: 0.1397, 0.85: 0.0099},
+    "ALL":      {0.50: 0.0183, 0.55: 0.0025, 0.60: 0.0273, 0.65: 0.0166,
+                 0.70: 0.1737, 0.75: 0.5065, 0.80: 0.2326, 0.85: 0.0225},
+}
+
+# THE HEADLINE FROM THOSE TWO TABLES: 0.85 — the level the shipped table used to be built at
+# ALONE — is 14.2% of the underlying book and 2.3% of SCO buyers. It is the tail of the
+# election distribution, not its centre, and it is the worst-case end of the miss-rate grid.
+SHARE_AT_MAX_LEVEL = 0.1422           # ELECTION_MIX["ALL"][0.85]
+SHARE_AT_MAX_LEVEL_SCO = 0.0225       # SCO_ELECTION_MIX["ALL"][0.85]
+
+# ECO's TRIGGER election, for the band mapping rather than the deductible: 98.95% of RY2026 ECO
+# acres (99.52% of liability) elect the 95% trigger, which is why src/rowcropopt.py maps ECO to
+# ECO95 first. Same source, RY2026 all crops.
+ECO_TRIGGER_MIX: dict[float, float] = {0.90: 0.0105, 0.95: 0.9895}
+
 # Farm-county yield correlation. THE one parameter this module imports from outside the data.
 # See docs/basis_risk.md for the sources and for the sensitivity of every output to it.
 # Deliberately a wide band, because the literature's own range is wide and varies by crop,
@@ -165,7 +291,12 @@ GRADE_B_YEARS = 20
 
 
 def grade_for(n_years: int) -> str | None:
-    """A/B/C data grade from series length, or None when too short to publish."""
+    """A/B/C data grade from series length, or None when too short to publish.
+
+    `grade` is DATA QUALITY — how many years of county history stand behind the row — and
+    never a risk level. A grade-A county can have terrible basis risk and a grade-C county
+    almost none; the grade says only how much evidence there is.
+    """
     if n_years >= GRADE_A_YEARS:
         return "A"
     if n_years >= GRADE_B_YEARS:
@@ -173,6 +304,88 @@ def grade_for(n_years: int) -> str | None:
     if n_years >= MIN_YEARS:
         return "C"
     return None
+
+
+# ===========================================================================
+# Coverage levels — selecting, snapping and blending on the FARM side
+# ===========================================================================
+
+def cl_key(coverage_level: float) -> float:
+    """Canonical key for a coverage level: 0.7000000001 and 0.7 must be the same row.
+
+    coverage_level is part of basis_risk_county's PRIMARY KEY and it is a REAL, so a caller
+    that arrives at 0.75 by arithmetic rather than by literal must still hit the row. Two
+    decimal places is exactly RMA's granularity (5-point steps).
+    """
+    return round(float(coverage_level), 2)
+
+
+def nearest_published_level(coverage_level: float,
+                            levels: Sequence[float] = PUBLISHED_COVERAGE_LEVELS) -> float:
+    """Snap a producer's own election onto the grid the table was built at.
+
+    Snaps UP, not to the nearest. Miss rate rises with the coverage level (Step 5b), so
+    rounding a 0.60 producer up to the published 0.65 OVER-states their basis risk and
+    UNDER-states the opportunity — the same conservative direction the rest of this module
+    errs in. Above the top of the grid it clamps to the top, which is the worst case anyway.
+    """
+    grid = sorted(cl_key(x) for x in levels)
+    if not grid:
+        raise ValueError("no published coverage levels")
+    cl = cl_key(coverage_level)
+    for g in grid:
+        if g >= cl - 1e-9:
+            return g
+    return grid[-1]
+
+
+def election_weights(crop: str = "ALL", *, book: str = "sco",
+                     levels: Sequence[float] = PUBLISHED_COVERAGE_LEVELS) -> dict[float, float]:
+    """Measured election weights, folded onto `levels` and renormalized to sum to 1.
+
+    book="sco"  — SCO_ELECTION_MIX, the deductibles carried by producers who actually bought an
+                  area band. The right weighting for an endorsement question, and the only one
+                  measured directly rather than inferred (see the constant's comment).
+    book="all"  — ELECTION_MIX, the whole underlying buy-up book: who COULD buy one.
+
+    Levels off the grid are folded into `nearest_published_level` of themselves, so no acre is
+    dropped and the sub-0.65 tail lands on 0.65 rather than vanishing.
+    """
+    src = {"sco": SCO_ELECTION_MIX, "all": ELECTION_MIX}.get(book)
+    if src is None:
+        raise ValueError(f"unknown book {book!r}; use 'sco' or 'all'")
+    mix = src.get(crop) or src["ALL"]
+    grid = [cl_key(x) for x in levels]
+    out = {g: 0.0 for g in grid}
+    for cl, w in mix.items():
+        out[nearest_published_level(cl, grid)] += float(w)
+    total = sum(out.values())
+    if total <= 0:
+        raise ValueError("election mix sums to zero")
+    return {k: v / total for k, v in out.items()}
+
+
+def blend_over_coverage_levels(by_level: dict[float, float], crop: str = "ALL", *,
+                               book: str = "sco") -> float:
+    """Election-weighted mean of a per-coverage-level quantity (usually miss_rate).
+
+    `by_level` is {coverage_level: value} — e.g. the five miss_rates for one county x crop x
+    band. Missing or NaN levels are dropped and the remaining weights renormalized, so a
+    partial build still returns something honest rather than a hole.
+
+    This is the number to quote for "the book", not for a person: a real producer has ONE
+    deductible and should be shown the row at THEIR level. The blend exists so that a national
+    or county rollup is not silently quoted at the worst level in the grid.
+    """
+    vals = {cl_key(k): float(v) for k, v in by_level.items()
+            if v is not None and not math.isnan(float(v))}
+    if not vals:
+        return float("nan")
+    w = election_weights(crop, book=book, levels=tuple(sorted(vals)))
+    tot = sum(w.get(k, 0.0) for k in vals)
+    if tot <= 0:
+        return float(sum(vals.values()) / len(vals))
+    return float(sum(vals[k] * w.get(k, 0.0) for k in vals) / tot)
 
 
 # ===========================================================================
@@ -319,9 +532,9 @@ class BasisRisk:
     """Every probability is an ANNUAL frequency for a TYPICAL farm in the county."""
     band: str
     plan_type: str
-    coverage_level: float
-    trigger: float
-    exit: float
+    coverage_level: float        # the PRODUCER's own MPCI deductible — the FARM side (Step 5b)
+    trigger: float               # the BAND's county trigger — RMA's, the COUNTY side
+    exit: float                  # 0.86 for ECO; the producer's coverage level for SCO
     rho: float
     county_cv: float
     farm_cv: float
@@ -346,7 +559,14 @@ class BasisRisk:
 
 
 def band_bounds(band: str, coverage_level: float) -> tuple[float, float]:
-    """(exit, trigger) for a band at a producer's coverage level. Raises if degenerate."""
+    """(exit, trigger) for a band at a producer's coverage level. Raises if degenerate.
+
+    The TRIGGER is RMA's and never moves: 0.95 / 0.90 / 0.86. The EXIT is 0.86 for both ECO
+    variants and the PRODUCER'S OWN coverage level for SCO — the one place where the farm-side
+    election reaches across into the county side (Step 5b). So SCO86 is 1 point wide at a 0.85
+    election, 11 at 0.75 and 21 at 0.65, and is refused outright at 0.86 and above, where there
+    is literally nothing left to buy.
+    """
     spec = BAND_SPECS.get(band)
     if spec is None:
         raise ValueError(f"unknown band {band!r}; known: {sorted(BAND_SPECS)}")
@@ -379,6 +599,13 @@ def basis_risk(
 
     `county_ratios` are DETRENDED county yield ratios (TrendFit.ratio) — pass raw yields here
     and every number will be wrong, inflated by the technology trend.
+
+    `coverage_level` is the PRODUCER's own MPCI deductible (Step 5b), not the band's trigger.
+    The default stays 0.85 because it is the conservative end of the grid — the most basis risk
+    any buy-up producer can have — but it describes only 14.2% of the underlying book and 2.3%
+    of the people who actually bought SCO. Pass the producer's own level when you know it,
+    MODAL_COVERAGE_LEVEL (0.75) for a typical one, or sweep PUBLISHED_COVERAGE_LEVELS and
+    combine with `blend_over_coverage_levels` for a book-level figure.
 
     The correlation between the county yield and the harvest price is not assumed directly. It
     is built as `corr_county_national * corr_national_price`: price responds to the NATIONAL
@@ -492,6 +719,14 @@ def metrics_from_draws(
       * farm == county exactly  ->  miss_rate == 0. The index cannot miss a farm it IS.
       * farm independent of county -> miss_rate == P(county index >= trigger), because
         knowing the farm lost tells you nothing about whether the county did.
+
+    THIS is also where the two coverage levels meet, and where the split is easiest to see in
+    code: `coverage_level` is compared against `farm_ratio` and NOTHING ELSE, while `trigger`
+    (from `band`) is compared against `county_ratio`. Sweeping coverage levels over ONE
+    JointDraws sample is therefore exact, not an approximation — the draws do not depend on the
+    producer's deductible at all. For ECO that also means the purely county-side outputs
+    (p_band_pays, uncovered_share, payout_corr, expected_payment_per_dollar) are identical at
+    every coverage level; for SCO they are not, because the exit moves with the election.
     """
     r_f = np.asarray(farm_ratio, dtype=float)
     r_c = np.asarray(county_ratio, dtype=float)

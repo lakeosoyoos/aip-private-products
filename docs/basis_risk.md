@@ -33,6 +33,18 @@ Business. This document supplies the fourth.
 | `ECO90` | 90% | 86% | 4 points, fixed |
 | `SCO86` | 86% | the producer's own coverage level | **depends on the producer** — 1 point at 85% RP |
 
+### Two things are called "coverage level". Read this before reading any number below
+
+| | What it is | Which side of the joint distribution | Column |
+|---|---|---|---|
+| **Band trigger** — 0.95 / 0.90 / 0.86 | RMA's, fixed by the endorsement elected | the **county** index | `band` |
+| **Producer coverage level** — 0.50 … 0.85 | the producer's own MPCI **deductible** | the **farm** | `coverage_level` |
+
+`miss_rate` = P( county index ≥ **trigger** │ farm ratio < **producer coverage level** ). The two
+percentages never touch except in `SCO86`, where the band *exits* at the producer's own level, so
+the election also sets the band's width. §4 Step 5b works this through. It is the easiest thing in
+this document to get backwards, and getting it backwards inverts the sign of every conclusion.
+
 ---
 
 ## 2. What we can and cannot know — read this before using any number
@@ -86,6 +98,10 @@ Gates: analysis window **1975–2025**; series must still be **live** (reach 201
 | Corn | ~1,900 | 48 | ~1,790 |
 | Soybeans | ~1,630 | 48 | ~1,475 |
 | Wheat | ~1,580 (Winter + Spring + Durum) | 46 | ~1,490 |
+
+Three crops, not because the estimator cares which crop it is, but because the connector's
+`COMMODITIES` map stops there. **§8a measures what every other field crop would yield if loaded** —
+cotton is the one worth doing, canola and dry peas genuinely cannot be done.
 
 ### Data decisions that materially affect the answer
 
@@ -220,6 +236,79 @@ loss came and the cheque did not.
 
 Everything else is an interpolation between those two, governed by ρ.
 
+### Step 5b — The producer's coverage level, and why 0.85 was the wrong place to stand
+
+The first build of `basis_risk_county` was produced at **coverage level 0.85 only**. That is a
+defensible default in exactly one sense — it is the worst case — and wrong in every other, because
+`miss_rate` is *monotone increasing* in the producer's election and 0.85 is the top of the grid.
+
+**Why the direction is what it is.** A lower election is a *bigger* deductible. The farm losses
+that qualify are therefore rarer and deeper, and a deep farm loss is far more likely to have come
+from weather the whole county shared — which is precisely when the county index fires. So fewer of
+the qualifying losses get missed:
+
+```
+lower producer coverage level → fewer, deeper qualifying farm losses → LOWER miss_rate
+```
+
+Measured on the national distribution of county CVs (RP, ρ = 0.70, medians across 4,935
+county × crop cells):
+
+| Band | CL 0.65 | 0.70 | 0.75 | 0.80 | **0.85** | election-blended |
+|---|---|---|---|---|---|---|
+| `ECO95` | 5.2% | 7.1% | 9.4% | 12.2% | **15.4%** | **9.5%** |
+| `ECO90` | 10.1% | 13.3% | 16.8% | 20.7% | **25.1%** | **16.8%** |
+| `SCO86` | 16.0% | 20.4% | 24.7% | 29.5% | **34.7%** | **24.8%** |
+
+### What producers actually elect — measured, not assumed
+
+Source: `sob_national` (RMA Summary of Business national rollup), **RY2025**, acre-weighted. Rerun
+with `build_basis_risk.py --election-mix`, which also re-checks the constants in `src/basisrisk.py`
+against the database.
+
+| Population | 0.50 | 0.55 | 0.60 | 0.65 | 0.70 | **0.75** | 0.80 | 0.85 |
+|---|---|---|---|---|---|---|---|---|
+| Underlying buy-up, corn+soy+wheat (198.7M ac) | 2.3% | 0.2% | 2.5% | 3.0% | 15.5% | **35.6%** | 26.7% | 14.2% |
+| **Producers who actually bought SCO** (6.6M ac) | 1.8% | 0.3% | 2.7% | 1.7% | 17.4% | **50.7%** | 23.3% | **2.3%** |
+
+Two things follow, and the second is the sharper one:
+
+* **0.85 is the tail, not the centre.** 14.2% of the book by acres (19.8% by liability), and the
+  mode is 0.75.
+* **Among people who buy an area band it is 2.3%.** SCO is the one endorsement whose Summary-of-
+  Business `coverage_level` field reports the *underlying* policy's level rather than its own
+  attachment, so this is a **direct measurement** of the deductible carried by area-band buyers —
+  no inference. The old build described one SCO buyer in forty-four.
+  (For ECO and MCO the same field carries the endorsement's own **trigger**, so an ECO buyer's
+  underlying level is not observable in the national rollup at all. SCO buyers are the proxy, and
+  the report prints both mixes so the substitution is visible.)
+
+**What the 0.85-only build was costing the opportunity map.** The map multiplies unclaimed subsidy
+by *responsiveness* = 1 − `miss_rate`. Applying the top of the grid everywhere over-discounts:
+
+| | ECO | SCO | SCO + ECO |
+|---|---|---|---|
+| Raw unclaimed subsidy, covered cells (RY2026, corn/soy/wheat) | $1.651B | $1.353B | $3.00B |
+| Basis-adjusted at CL 0.85 (as shipped) | $1.375B | $0.837B | $2.21B |
+| Basis-adjusted at the measured election mix | $1.480B | $0.984B | $2.46B |
+| **Over-discount** | +$106M (+7.7%) | +$147M (+17.6%) | **+$253M (+11.4%)** |
+
+Nearly a third of the discount the map applied — $253M of $792M — was an artefact of the coverage
+level chosen at build time, not a statement about basis risk. SCO takes the larger correction
+because at CL 0.85 SCO is a *one-point-wide* band, the most degenerate configuration it has.
+
+**The fix, now in place.** `--coverage-levels` defaults to
+`basisrisk.PUBLISHED_COVERAGE_LEVELS = (0.65, 0.70, 0.75, 0.80, 0.85)` and `coverage_level` is part
+of `basis_risk_county`'s primary key, so a caller selects the level it wants:
+
+* a producer with a known election → their own level (`nearest_published_level` snaps off-grid
+  elections **up**, which over-states their basis risk — the safe direction);
+* one number for a typical producer → `MODAL_COVERAGE_LEVEL` = 0.75;
+* a book-level rollup → `blend_over_coverage_levels(...)`, weighted by `SCO_ELECTION_MIX`.
+
+The five published levels carry 95.0% of buy-up acres and 95.2% of SCO buyers' acres; the 5.0%
+below 0.65 fold up into 0.65 rather than being dropped.
+
 ### Step 6 — Uncertainty from the length of the series
 
 `bootstrap_miss_rate` resamples **years** (not draws) and **refits the trend on each resample**, so
@@ -311,7 +400,8 @@ nice-to-have: for an individual, ρ is *measurable*, and measuring it beats assu
 ## 6. Results
 
 *(Generated by `scripts/analysis/build_basis_risk.py --report`. Reference settings: RP plan type,
-farm coverage level 0.85, ρ = 0.70, OLS detrend, 1975–2025.)*
+ρ = 0.70, OLS detrend, 1975–2025, and the **modal** farm coverage level 0.75 — not 0.85; see §4
+Step 5b for why the drill-downs moved off the top of the grid.)*
 
 See `RESULTS` section appended below by the build.
 
@@ -375,20 +465,112 @@ Stated plainly, because each one bounds a claim above.
    is the wrong series — and the direction of the error differs by farm. (The
    irrigated/non-irrigated rate gap that proves RMA treats these as different risks is measured in
    `scripts/analysis/basis_risk.py`, Part A.)
-4. **MCO's margin trigger.** MCO settles on a county *margin* — revenue minus an input-cost index.
-   We model it as an area revenue band, which **understates** its basis risk, because input-cost
-   basis is an additional layer we do not model at all.
+4. **MCO's margin trigger** — see §8a, which sets out what an estimator would need.
 5. **Prevented planting, replant, and quality adjustment**, all of which can make a farm's insurable
    loss differ from its yield loss.
-6. **STAX** specifically. It is cotton-dominated and `docs/rowcrop_endorsement_stacking.md` already
-   flags its Summary-of-Business rows as untrustworthy. The estimator will run on cotton counties,
-   but cotton is not in the loaded crop set.
+6. **STAX** — see §8a. Unlike MCO this one is a loading problem, not a modelling problem.
 7. **Whether RMA's expected county yield equals our fitted trend.** RMA publishes the *expected*
    county yield used for area plans in the ADM; we fit our own trend to NASS. They will not agree
    exactly, and a county whose RMA expected yield sits above our fitted trend will trigger less
    often than we estimate. Reconciling the two is the highest-value next step.
 8. **The correlation between national yield and harvest price (−0.6)** is assumed, not measured.
    Measuring it requires projected/harvest price history from the ADM rather than cash prices.
+
+---
+
+## 8a. The two uncovered bands, and the uncovered crops
+
+### MCO — the largest hole on the map, and the one that should stay a hole for now
+
+MCO carries **$7.89B of unclaimed subsidy at 1.2% penetration** — the biggest raw figure in
+`rowcrop_unclaimed` and 100% unmeasured for basis risk. It is also the one band that must not be
+approximated with the estimator in this repo, for a reason of mechanism rather than effort.
+
+**MCO settles on a county MARGIN, not a county revenue.** PM-25-029: *"a band of insurance from 86
+percent up to 95 percent of expected crop value to cover producers' operating margins."* The
+input basket, per the MCO FAQ, is **diesel, natural gas, urea, DAP and potash** — note it uses
+natural gas where Margin Protection uses interest, so the two margin products do not even price the
+same basket (`docs/rowcrop_endorsement_stacking.md` §3.3). That is a **third leg** in the joint
+distribution, not a re-parameterisation of the two that are there.
+
+What an MCO estimator would need, and what exists:
+
+| Input | Status |
+|---|---|
+| County expected yield index | **Have** (NASS, corn/soy/wheat; cotton/sorghum/rice would need loading) |
+| Projected & harvest price | **Have** (ADM `A00810`) |
+| RMA's *expected margin* per county × type × practice | **Have, for RY2026 only** — ADM `A00810` carries `Expected Margin Amount`, `Expected Revenue Amount` and `Expected Index Value`, so the implied input-cost amount is just their difference (e.g. soybeans: $519.33 − $450.86 = **$68.47/acre**) |
+| A **history** of that input-cost index | **Do not have, and it does not exist.** MCO's first reinsurance year is 2026. There is exactly one observation of the index |
+| The joint distribution of (county yield, harvest price, input cost) | **Do not have.** This is the whole ballgame — input costs are strongly positively correlated with crop prices (2008, 2021–22), which *hedges* the margin |
+| The basket weights / per-acre application rates by crop | Live in the MCO actuarial method and the 508(h) filing, not in anything loaded here |
+
+**Verdict: report `unknown`, do not model.** Bolting MCO onto the yield model would not merely be
+imprecise, it would be biased in a direction that is hard to sign, because the two errors run
+opposite ways: the input-cost leg is *national*, like price, so it cannot miss anybody and pushes
+MCO's basis risk **down** relative to a yield band — while the producer's *own* input costs (a
+farm that pre-bought fertiliser, or runs a different rate) differ from the index and add a layer
+that pushes it **up**. Neither is estimable from what we hold.
+
+Reconstructing a 25-year history of RMA's basket from public component series (EIA diesel and
+natural gas, fertiliser price indices) is a genuine research project, and the result would be *our*
+index, not RMA's. The honest interim path is the one already taken: `src/rowcropopt.py` maps MCO to
+no band variant, and `BASIS_BAND_NOTE` says so on the page.
+
+**One caveat that belongs next to the $7.89B.** RY2026 is MCO's **first sales year**. A 1.2%
+penetration rate in year one is what a new product looks like, not necessarily an untapped market;
+the map's largest number is also its youngest, and it will move a lot on its own.
+
+### STAX — a loading problem, not a modelling problem
+
+STAX is upland-cotton-only and settles on **expected area revenue** with a trigger the producer
+picks between 90% and 75% and a coverage range up to 20 points (23-STAX-0021 §1). That is
+structurally the *same shape* the estimator already handles — a county revenue index with a trigger
+and an exit. Nothing conceptual is missing. What is missing is cotton:
+
+1. `src/connectors/nass_yield.py`'s `COMMODITIES` map stops at `CORN / SOYBEANS / WHEAT`. Adding
+   `COTTON → Cotton` loads **408 usable upland-cotton counties**, 351 of them grade A (measured
+   below).
+2. `basisrisk.DEFAULT_UNIT` is hard-coded to `BU / ACRE`; cotton and rice are `LB / ACRE`, so the
+   unit needs to become per-crop.
+3. `BAND_SPECS` needs STAX entries keyed by trigger — `STAX90` (0.90 → 0.70), `STAX85`, … — and the
+   protection factor (80–120%, §5(a)) scales liability, not the trigger, so it does not enter
+   `miss_rate` at all.
+4. `PRICE_VOL` needs cotton's factor; the 2026 ADM publishes it (0.13 on the rows checked).
+
+STAX's whole book is **$0.22B unclaimed** against MCO's $7.89B, so this is a small prize — but it
+is a small prize for a day's work, whereas MCO is a large prize for a research programme.
+
+### Which further crops are feasible from NASS county yields
+
+Counties whose SURVEY county yield series has **≥12 distinct years since 1975 and still reports in
+2018 or later** — the same gates the estimator applies. Measured directly from the cached Quick
+Stats bulk file (`qs.crops_20260807`), so these are what a load would actually yield, not an
+estimate. "Grade A" is ≥30 years.
+
+| NASS commodity / class | Unit | Usable counties | Grade A | Unclaimed on the map | Verdict |
+|---|---|---|---|---|---|
+| CORN, all classes | BU/ACRE | 1,917 | 1,810 | $3.92B | **loaded** |
+| SOYBEANS, all classes | BU/ACRE | 1,628 | 1,475 | $2.30B | **loaded** |
+| WHEAT — winter / spring / durum | BU/ACRE | 1,291 / 237 / 57 | 1,220 / 220 / 50 | $0.47B | **loaded** |
+| **COTTON, upland** | LB/ACRE | **408** | 351 | $0.46B | **feasible — do this one.** Unlocks STAX *and* cotton SCO/ECO/MCO; covers 75% of the 542 cotton counties on the map |
+| **SORGHUM** (catalog "Grain Sorghum") | BU/ACRE | **267** | 257 | $0.11B | **feasible**, but only 41% of the 647 sorghum counties on the map — the rest never had a county estimate |
+| **RICE** | LB/ACRE | **81** | 75 | $0.11B | **feasible**; 77% of the 105 rice counties on the map |
+| OATS | BU/ACRE | 576 | 525 | — | feasible, no material area-band book |
+| BARLEY | BU/ACRE | 174 | 164 | — | feasible, thin |
+| PEANUTS | LB/ACRE | 148 | 117 | — | feasible, thin |
+| SUNFLOWER, oil type | LB/ACRE | 49 | 44 | — | marginal |
+| BEANS, dry edible | LB/ACRE | 39 | 35 | — | marginal |
+| **CANOLA** | LB/ACRE | 41 | **0** | $0.034B | **not feasible.** No county reaches 30 years; median ~20. Covers 23% of the 180 canola counties on the map |
+| **PEAS, dry edible** | LB/ACRE | 29 | **0** | $0.019B | **not feasible.** Same problem, worse — 21% of map counties |
+| FLAXSEED | BU/ACRE | 25 | 24 | — | not worth it |
+| COTTON, Pima | LB/ACRE | 10 | 7 | — | **not feasible** |
+| LENTILS / CHICKPEAS / MUSTARD / RYE | — | ≤10 | 0 | — | **not feasible** |
+
+Two things this table settles. **Cotton is the one crop that materially moves the map** — it is the
+fourth-largest unclaimed figure and it is the only band-and-crop pair where a single connector
+change unlocks a whole band. And **canola and dry peas cannot be done at all**, not because nobody
+loaded them but because NASS has never published a long enough county series; any number for them
+would be a 20-year CV dressed up as a 45-year one. They stay `unknown`, which is the true answer.
 
 ---
 
@@ -404,10 +586,19 @@ Stated plainly, because each one bounds a claim above.
 # 2. Precompute the shipped table
 .venv/bin/python scripts/analysis/build_basis_risk.py
 
-# 3. Inspect
+# 3. Inspect  (--report and --election-mix open the DB READ-ONLY and skip db.init_db, so they
+#    are safe to point at the committed data/catalog_app.db; the build and --calibrate-rho
+#    are not, because they need nass_county_yield and they write.)
 .venv/bin/python scripts/analysis/build_basis_risk.py --report
+.venv/bin/python scripts/analysis/build_basis_risk.py --report --at-coverage-level 0.85
+.venv/bin/python scripts/analysis/build_basis_risk.py --election-mix
 .venv/bin/python scripts/analysis/build_basis_risk.py --calibrate-rho
 ```
+
+`--report` drills into the **modal** election (0.75) rather than the top of the grid, and ends with
+a COVERAGE-LEVEL BIAS block that measures the over-discount of §4 Step 5b from the built rows.
+`--election-mix` re-derives the election distribution from `sob_national` and flags any constant in
+`src/basisrisk.py` that has drifted more than half a point from it.
 
 ### Size discipline — what has to be wired into `scripts/build_app_db.py`
 
@@ -435,7 +626,31 @@ REQUIRED = [
 ```
 
 Measured footprint: `nass_county_yield` ≈ **420 MB** with its index (must not ship);
-`basis_risk_county` ≈ **4 MB** (ships).
+`basis_risk_county` ≈ **6.4 MB** at one coverage level, data plus indexes (ships).
+
+**The coverage-level dimension is this table's one real budget line.** 373 bytes per row, measured,
+and every extra level is a full set of ~2,960 rows:
+
+| Coverage levels built | Rows | `basis_risk_county` | App DB |
+|---|---|---|---|
+| 1 (the old `0.85`) | 14,805 | 6.4 MB | 60 MB |
+| **5 (the default now)** | **74,025** | **32.6 MB** | **~86 MB** |
+
+That is inside the 95 MB ceiling and inside `build_app_db.py`'s 90 MB warning, but it spends most of
+the remaining headroom. Two levers, in order of preference, if it ever needs to come back down:
+
+1. **Drop levels, not columns.** `--coverage-levels 0.70,0.75,0.80,0.85` still covers 92.0% of
+   buy-up acres and 93.7% of SCO buyers' acres for 26 MB.
+2. **Normalise behind a view.** About half of each row (state, county name, `n_years`, the trend
+   fit, `county_cv`, `county_skew`, `corr_national`, `grade`, provenance) does not vary with the
+   coverage level and is duplicated five times. Splitting the per-county facts into one table and
+   the per-level metrics into another, with `basis_risk_county` recreated as a **view** over the
+   join, measures at **17.2 MB** for the same five levels — a 15.4 MB saving with no change to any
+   reader, since every consumer selects named columns. `prf_opt_best` is already exactly this
+   pattern (`scripts/build_app_db.py: dedupe_prf_opt_best`), and `REQUIRED` / `REQUIRED_COLUMNS`
+   already accept a view. **Not done here**: it needs a DDL change in `src/db.py` plus a migration
+   that drops the existing table (a `CREATE VIEW IF NOT EXISTS` is silently a no-op when a table of
+   that name exists), and the working DB was mid-rebuild.
 
 ### Files
 
@@ -447,7 +662,7 @@ Measured footprint: `nass_county_yield` ≈ **420 MB** with its index (must not 
 | `scripts/analysis/build_basis_risk.py` | precompute, report, ρ calibration (new) |
 | `scripts/analysis/farm_basis_risk.py` | the producer-facing CLI (new) |
 | `scripts/analysis/basis_risk.py` | the pre-existing Monte Carlo + ADM/SoB evidence (unchanged) |
-| `tests/test_basisrisk.py` | 48 tests, including the two limits (new) |
+| `tests/test_basisrisk.py` | 67 tests: the two limits, the coverage-level direction, and the builder end-to-end on a synthetic county history |
 
 `scripts/analysis/basis_risk.py` is complementary, not superseded: its Part A (the
 irrigated/non-irrigated Reference Rate gap in the same county) and Part B (the price-vs-yield

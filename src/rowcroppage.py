@@ -89,8 +89,12 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import math
+import re
 import sqlite3
+from dataclasses import dataclass, field
 
+from . import basisrisk as B
 from .prfpage import (
     STATE_TIMEZONE, load_aip_commission, load_commission_zones, seed_mtime,
 )
@@ -104,6 +108,11 @@ __all__ = [
     "ALL_CROPS", "BAND_LABELS", "BAND_ORDER", "BASIS_CELL", "BASIS_LABELS", "BASIS_STATES",
     "STATE_TIMEZONE", "build_rowcrop_page_payload", "generate", "render",
     "render_rowcrop_page_html", "ring_clockwise", "seed_mtime",
+    # -- the farm calculator (see the section at the bottom of this module) --------------
+    "BandOutcome", "CountySeries", "FARM_BANDS", "FARM_MIN_YEARS", "FARM_POINT_YEARS",
+    "FarmReport", "build_county_yield_series", "confidence_for", "county_choices",
+    "farm_report", "load_county_series", "parse_aph_series", "published_basis_risk",
+    "render_farm_calculator", "typical_miss_by_band",
 ]
 
 # value_basis -> (short label, is it observed or fitted). Index order is the payload's wire
@@ -541,6 +550,1267 @@ def render() -> None:
         return
     # See the note in src/drppage.py: st.components.v1.html is past its removal date.
     st.iframe(html, height=880)
+
+
+# ===========================================================================
+# THE FARM CALCULATOR — from "counties like yours" to "your farm, specifically"
+# ===========================================================================
+#
+# WHAT IT REPLACES, AND WHY THAT IS THE WHOLE POINT
+# -------------------------------------------------
+# Everything above this line is county-typical. `basis_risk_county` describes a MODELLED
+# farm in each county, and the one parameter that model cannot get from public data is rho,
+# the farm-to-county yield correlation — imported at 0.70 for every county in the United
+# States (src/basisrisk.py: RHO_REF). That single assumption swings the answer roughly 2x:
+# nationally the SCO86 miss rate averages 0.455 at rho=0.55 and 0.235 at rho=0.85.
+#
+# A producer who reads ten years off their own APH schedule replaces that assumption with a
+# MEASUREMENT of their own operation. Nothing else about these products is farm-specific:
+# they carry ~80% premium subsidy, so at FCIC's statutory target loss ratio of 1.0
+# (7 U.S.C. 1506(n)(2)) the gross expected return is 1/(1-0.80) = 5x for every farm in the
+# country, identically. Basis risk is the entire differentiator, and rho is the whole of
+# basis risk. So this is not a nicety bolted onto the map — it is the map's weakest number,
+# measured instead of assumed.
+#
+# WHAT THIS IS NOT. It is not a quote, not a premium, and not a recommendation to buy or
+# decline anything. It sizes ONE risk — the chance that a county-index endorsement pays
+# nothing in a year this farm genuinely lost money — and it does that from a short, noisy
+# series. Every consumer of the numbers below has to carry the confidence interval with them.
+#
+# THE THREE THINGS IT WILL NOT DO
+# -------------------------------
+#   1. It will not correlate raw yields. Both series are DETRENDED (ratio to a fitted
+#      technology trend) and ALIGNED on the overlapping years before anything is measured;
+#      the correlation of two rising series is nearly meaningless. The alignment table is
+#      rendered on the page so the producer can see exactly which years were used.
+#   2. It will not print a point estimate off too few years. Below FARM_POINT_YEARS the
+#      correlation is reported as an INTERVAL only, and below FARM_MIN_YEARS it refuses
+#      outright — see `confidence_for` for the arithmetic behind both thresholds.
+#   3. It will not quietly substitute the county-typical answer when the farm answer fails.
+#      `farm_basis_risk` falls back to rho=0.70 when the measured correlation is unusable
+#      and says so in a warning; that warning is surfaced as an error banner, not a footnote.
+#
+# WHERE THE COUNTY SERIES COMES FROM (the one real deployment seam)
+# -----------------------------------------------------------------
+# Measuring rho needs the county's yield history YEAR BY YEAR — a summary statistic cannot be
+# paired with the producer's years. `nass_county_yield` holds it (2.54M rows, ~795 MB with
+# indexes) and scripts/build_app_db.py DROPS it from the shipped app DB for that reason.
+# So `load_county_series` reads, in order:
+#
+#   1. `county_yield_series` — the compact sidecar this module builds: one row per county x
+#      crop carrying the already-selected series as two short strings, ~2 MB for the country.
+#      build_app_db.py copies the working DB and drops a named list, so a table that is not on
+#      that list ships automatically; nothing in that file has to change.
+#   2. `nass_county_yield` itself, via basisrisk.load_series — the path in a local working
+#      catalog.
+#
+# With neither present the calculator says exactly which table is missing and which command
+# loads it, and computes nothing. A farm-specific answer with no farm-specific input is the
+# one output this module must never produce.
+
+# The three triggers basis risk is modelled for. Ordered SHALLOWEST TRIGGER FIRST, which is
+# also best-to-worst on basis risk and is the ordering the comparison table is read in: a
+# deeper county trigger fires in fewer years and therefore misses more farm losses. The
+# national averages over basis_risk_county (RY2026 build, 4,935 county x crop cells each) are
+# ECO95 0.162, ECO90 0.262, SCO86 0.361 — computed here at runtime by `typical_miss_by_band`
+# rather than hard-coded, so the page cannot drift away from the shipped table.
+FARM_BANDS: tuple[str, ...] = ("ECO95", "ECO90", "SCO86")
+
+# Below this many OVERLAPPING years we refuse to answer at all. The reason is arithmetic, not
+# taste: the Fisher z interval for a correlation has standard error 1/sqrt(n-3), so at n=4 it
+# is undefined-adjacent and at n=5 a measured rho of 0.70 carries a 90% interval of roughly
+# (-0.29, +0.97). That interval contains "this farm is the county" and "this farm has nothing
+# to do with the county" at the same time, which is not an estimate, it is a shrug with a
+# decimal point on it.
+FARM_MIN_YEARS = 5
+# Below this many years we show the INTERVAL but withhold the point estimate, because a
+# two-decimal number reads as knowledge. At n=10 (a full RMA APH database) that interval is
+# still about (0.24, 0.90) around a measured 0.70 — usable to tell a tracker from a loner,
+# not usable as a number.
+FARM_POINT_YEARS = 10
+# At and above this the interval is roughly +/-0.2 and starts to constrain the decision.
+FARM_GOOD_YEARS = 15
+# And this is where it is tight enough that the farm figure, not the interval, is the story.
+FARM_STRONG_YEARS = 20
+
+# MEASURED from the 2026 ADM Price record (A00810 "Price Volatility Factor") medians — the
+# same values scripts/analysis/farm_basis_risk.py uses, kept in step with it deliberately.
+FARM_PRICE_VOL: dict[str, float] = {"Corn": 0.15, "Soybeans": 0.13, "Wheat": 0.19}
+FARM_CROPS: tuple[str, ...] = ("Corn", "Soybeans", "Wheat")
+FARM_SUBSIDY = 0.80          # statutory for SCO/ECO from RY2026 (OBBBA sec. 10302)
+FARM_DRAWS = 100_000         # ~0.1 s per band; the whole page is well under a second
+
+COUNTY_SERIES_TABLE = "county_yield_series"
+
+# Values a producer's schedule prints where a yield is missing. These CONSUME a year slot in a
+# bare comma list (so the alignment does not silently shift) but never enter the series.
+APH_BLANKS = {"", "-", "--", "---", ".", "na", "n/a", "nan", "none", "null", "(d)", "(na)",
+              "(x)", "(z)", "*", "?", "blank", "missing", "skip", "x"}
+APH_MAX_PLAUSIBLE_YIELD = 500.0     # bu/ac; the US corn county record is comfortably under
+APH_MIN_YEAR, APH_MAX_YEAR = 1950, 2100
+
+
+# --------------------------------------------------------------------- input
+
+def parse_aph_series(text: str, start_year: int | None = None) -> tuple[dict[int, float], list[str]]:
+    """Parse a pasted APH yield history into {year: yield}, plus a list of PROBLEMS.
+
+    Designed for an agent sitting across a desk from a producer with a schedule in their hand,
+    so it takes whatever comes out of that: one pair per line, all pairs on one line, tabs from
+    a spreadsheet paste, `2016: 178`, `2016 = 178`, `2016,178`, or a bare list of yields with
+    the oldest year given separately.
+
+    Problems are RETURNED, never raised and never silently swallowed. A producer who typos a
+    year into the yield column has to see that, because the wrong answer it produces is not
+    obviously wrong — it is a plausible-looking correlation.
+
+    Returns ({}, problems) when nothing usable is found; the caller decides what to say.
+    """
+    problems: list[str] = []
+    raw = (text or "").strip()
+    if not raw:
+        return {}, problems
+
+    # Split into tokens, remembering line breaks: a line is a natural record boundary, so
+    # `2016 178` on its own line is a pair while `178 201` in a bare list is two yields.
+    lines = [ln.strip() for ln in raw.replace("\r", "\n").split("\n")]
+    lines = [ln for ln in lines if ln and not ln.startswith("#")]
+
+    def _clean(tok: str) -> str:
+        # Strip the units, currency and stray punctuation a real paste carries. Thousands
+        # commas are left in place here and removed in _num, because a comma is also the
+        # field separator and the two cases have to be told apart by the caller, not here.
+        t = tok.strip().strip("|;").replace("bu/ac", "").replace("bu", "").replace("/ac", "")
+        return t.replace("$", "").replace("%", "").strip()
+
+    def _num(tok: str):
+        t = _clean(tok).replace(",", "")
+        if not t:
+            return None
+        try:
+            return float(t)
+        except ValueError:
+            return None
+
+    def _is_year(v) -> bool:
+        return v is not None and float(v).is_integer() and APH_MIN_YEAR <= v <= APH_MAX_YEAR
+
+    # Does the input carry its own year labels? A line counts as labelled when it starts with
+    # something that can only be a year and is followed by something that cannot be one. Two
+    # such lines are required, so a single stray 4-digit yield cannot flip the whole parse.
+    pair_re = re.compile(r"^\s*(\d{4})\s*[:=\t,;| ]\s*(.+?)\s*$")
+    labelled = 0
+    for ln in lines:
+        for chunk in re.split(r"[;|]", ln):
+            m = pair_re.match(chunk.strip())
+            if m and _is_year(_num(m.group(1))):
+                tail = m.group(2).split()
+                v = _num(tail[0]) if tail else None
+                if v is not None and not _is_year(v):
+                    labelled += 1
+
+    out: dict[int, float] = {}
+
+    def _record(year: int, value: float) -> None:
+        if year in out:
+            problems.append(f"{year} appears more than once; the last value ({value:g}) is used.")
+        if value <= 0:
+            problems.append(f"{year}: a yield of {value:g} is not usable and was dropped "
+                            "(a zero reads as a total crop failure and a blank is not a zero).")
+            return
+        if value > APH_MAX_PLAUSIBLE_YIELD:
+            problems.append(f"{year}: {value:g} bu/ac is implausibly high and was dropped — "
+                            "check for a total production figure in the yield column.")
+            return
+        out[year] = value
+
+    if labelled >= 2:
+        for ln in lines:
+            for chunk in re.split(r"[;|]", ln):
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                m = pair_re.match(chunk)
+                if not m:
+                    if _clean(chunk).lower() not in APH_BLANKS and _num(chunk) is None:
+                        continue                    # a header row like "Year  Yield"
+                    if _num(chunk) is not None:
+                        problems.append(f"could not read a year for {chunk!r}; it was skipped.")
+                    continue
+                year = int(_num(m.group(1)))
+                rest = m.group(2).strip()
+                first = rest.split()[0] if rest.split() else rest
+                if _clean(first).lower() in APH_BLANKS:
+                    continue                        # a year with no yield: legitimately blank
+                v = _num(first)
+                if v is None:
+                    problems.append(f"{year}: could not read a yield from {rest!r}.")
+                    continue
+                if _is_year(v):
+                    problems.append(f"{year}: the value {v:g} looks like a year, not a yield — "
+                                    "check the columns.")
+                    continue
+                _record(year, v)
+        if not out:
+            problems.append("no year/yield pairs could be read.")
+        return out, problems
+
+    # Bare list. Every token is a yield; the years run consecutively from `start_year`.
+    tokens: list[str] = []
+    for ln in lines:
+        tokens.extend(t for t in re.split(r"[,\t ;|]+", ln))
+    tokens = [t for t in tokens if t.strip() != ""]
+    if not tokens:
+        return {}, problems
+    numeric = [_num(t) for t in tokens]
+    if all(_is_year(v) for v in numeric if v is not None) and len(tokens) >= 3:
+        problems.append("every value looks like a year. Paste YIELDS (one per year), or "
+                        "year/yield pairs such as `2016: 178`.")
+        return {}, problems
+    if start_year is None:
+        problems.append("a bare list of yields needs the FIRST (oldest) year, so the series "
+                        "can be lined up against the county's. Enter it above, or paste "
+                        "year/yield pairs such as `2016: 178`.")
+        return {}, problems
+    for i, tok in enumerate(tokens):
+        year = int(start_year) + i
+        if _clean(tok).lower() in APH_BLANKS:
+            continue                                # holds the slot, contributes no yield
+        v = numeric[i]
+        if v is None:
+            problems.append(f"could not read {tok!r} as a yield; that year was skipped.")
+            continue
+        _record(year, v)
+    if out and max(out) > _dt.date.today().year:
+        problems.append(f"the series runs to {max(out)}, which is in the future — check the "
+                        "first year.")
+    return out, problems
+
+
+# --------------------------------------------------------------- uncertainty
+
+def confidence_for(n_years: int) -> dict:
+    """How much a correlation measured on `n_years` paired observations is actually worth.
+
+    Returns {level, headline, detail, show_point, usable, half_width}. `half_width` is the
+    HALF-WIDTH of the 90% Fisher interval around a correlation of 0.70 at this n, in
+    correlation points — a single honest number for "how blurred is this".
+
+    The thresholds are the arithmetic of 1/sqrt(n-3), not a house style. See FARM_MIN_YEARS.
+    """
+    n = int(n_years or 0)
+    lo, hi = B._fisher_ci(0.70, n)
+    half = float("nan") if (math.isnan(lo) or math.isnan(hi)) else (hi - lo) / 2.0
+    if n < FARM_MIN_YEARS:
+        return dict(
+            level="refused", usable=False, show_point=False, half_width=half,
+            headline=f"{n} overlapping year(s) is not enough to measure anything.",
+            detail=(
+                f"We need at least {FARM_MIN_YEARS} years where your records and the county's "
+                f"history overlap, and {FARM_POINT_YEARS} before we will print a number rather "
+                "than a range. The reason is not caution, it is arithmetic: the uncertainty on "
+                "a correlation shrinks as 1/sqrt(n-3), so at 5 years a measured 0.70 carries a "
+                "90% interval of about -0.29 to +0.97. That interval says your farm might be "
+                "the county and might be unrelated to it, at the same time. Bring more years "
+                "of your own harvested yields — that is the only thing that narrows it."),
+        )
+    if n < FARM_POINT_YEARS:
+        return dict(
+            level="very weak", usable=True, show_point=False, half_width=half,
+            headline=f"{n} overlapping years — a range, not a number.",
+            detail=(
+                f"At {n} years the 90% interval around your correlation is roughly "
+                f"+/-{half:.2f}, which is most of the range a farm can occupy. We show the "
+                "interval and withhold the point estimate on purpose: a two-decimal figure off "
+                f"{n} years reads as knowledge it is not. It is still worth having — it is "
+                "measured from your operation rather than assumed — but read the WIDTH, not "
+                "the middle."),
+        )
+    if n < FARM_GOOD_YEARS:
+        return dict(
+            level="weak", usable=True, show_point=True, half_width=half,
+            headline=f"{n} overlapping years — enough to place you, not to pin you.",
+            detail=(
+                f"A full RMA APH database is ten years, so this is the usual case. The 90% "
+                f"interval is still about +/-{half:.2f}: enough to tell a farm that tracks its "
+                "county from one that does not, not enough to argue about the second decimal. "
+                "Read the miss rate as the range across that interval, which is the column "
+                "shown, not as the middle figure."),
+        )
+    if n < FARM_STRONG_YEARS:
+        return dict(
+            level="moderate", usable=True, show_point=True, half_width=half,
+            headline=f"{n} overlapping years — the interval is starting to bite.",
+            detail=(f"The 90% interval is about +/-{half:.2f}. That is narrow enough that the "
+                    "band comparison below is driven by your farm rather than by the "
+                    "assumption, which is the whole reason for doing this."),
+        )
+    return dict(
+        level="reasonable", usable=True, show_point=True, half_width=half,
+        headline=f"{n} overlapping years — as good as an APH history gets.",
+        detail=(f"The 90% interval is about +/-{half:.2f}. This is a measurement of your "
+                "operation. It is still one operation's history and it still assumes the "
+                "farm = county + independent shock model in src/basisrisk.py, but the number "
+                "that model turns on is now yours."),
+    )
+
+
+# ------------------------------------------------------------- county series
+
+@dataclass
+class CountySeries:
+    """The county's own yield history — the half of the calculation that is MEASURED."""
+    crop: str
+    county_fips: str
+    state: str
+    county_name: str
+    years: list[int]
+    values: list[float]
+    class_used: str
+    practice_used: str
+    corr_national: float | None
+    source: str                 # which table it came out of
+
+    @property
+    def label(self) -> str:
+        name = (self.county_name or "").title().strip()
+        return f"{name} County, {self.state}" if name else self.county_fips
+
+    @property
+    def grade(self) -> str | None:
+        return B.grade_for(len(self.years))
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    try:
+        return bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone())
+    except sqlite3.DatabaseError:
+        return False
+
+
+def load_county_series(conn: sqlite3.Connection, crop: str, county_fips: str,
+                       *, min_year: int = 1975, max_year: int | None = None) -> CountySeries | None:
+    """The county's yield history from whichever table this DB happens to carry.
+
+    Sidecar first, raw NASS second, None third. See the module section header for why the raw
+    table cannot ship and why the sidecar is a table rather than a file.
+    """
+    fips = _fips5(county_fips)
+    if not fips or not crop:
+        return None
+
+    if _table_exists(conn, COUNTY_SERIES_TABLE):
+        row = conn.execute(
+            f"SELECT state, county_name, class_used, practice_used, years, yields, "
+            f"       corr_national FROM {COUNTY_SERIES_TABLE} "
+            "WHERE crop = ? AND county_fips = ?", (crop, fips)).fetchone()
+        if row:
+            state, cname, cls, prac, yrs, vals, corr = tuple(row)
+            try:
+                years = [int(y) for y in str(yrs).split(",") if y.strip()]
+                values = [float(v) for v in str(vals).split(",") if v.strip()]
+            except ValueError:
+                years, values = [], []
+            pairs = [(y, v) for y, v in zip(years, values)
+                     if y >= min_year and (max_year is None or y <= max_year) and v > 0]
+            if len(pairs) >= B.MIN_YEARS:
+                return CountySeries(
+                    crop=crop, county_fips=fips, state=str(state or ""),
+                    county_name=str(cname or ""),
+                    years=[p[0] for p in pairs], values=[p[1] for p in pairs],
+                    class_used=str(cls or ""), practice_used=str(prac or ""),
+                    corr_national=_f(corr), source=COUNTY_SERIES_TABLE)
+
+    if _table_exists(conn, "nass_county_yield"):
+        got = B.load_series(conn, crop, fips, min_year=min_year, max_year=max_year)
+        if got:
+            years, values, cls, prac = got
+            meta = conn.execute(
+                "SELECT state, county_name FROM nass_county_yield WHERE crop = ? AND "
+                "stat = 'YIELD' AND agg_level = 'COUNTY' AND loc_key = ? LIMIT 1",
+                (crop, fips)).fetchone()
+            pub = published_basis_risk(conn, crop, fips)
+            any_row = next(iter(pub.values()), None)
+            return CountySeries(
+                crop=crop, county_fips=fips,
+                state=str((meta[0] if meta else "") or ""),
+                county_name=str((meta[1] if meta else "") or ""),
+                years=list(years), values=list(values),
+                class_used=str(cls or ""), practice_used=str(prac or ""),
+                corr_national=_f(any_row.get("corr_national")) if any_row else None,
+                source="nass_county_yield")
+    return None
+
+
+def published_basis_risk(conn: sqlite3.Connection, crop: str, county_fips: str) -> dict[str, dict]:
+    """The SHIPPED county-typical row per band, from basis_risk_county. {} when absent.
+
+    This is the figure the map draws and the thing the farm answer is measured AGAINST. Note
+    its coverage_level: the shipped build is 0.85 only, so it is not comparable to a farm
+    answer at a different deductible, and the caller has to say so rather than line the two up
+    in a table and let the reader assume.
+    """
+    if not _table_exists(conn, "basis_risk_county"):
+        return {}
+    fips = _fips5(county_fips)
+    cols = ("band", "miss_rate", "miss_rate_rho_lo", "miss_rate_rho_hi", "rho_ref", "rho_lo",
+            "rho_hi", "grade", "n_years", "year_min", "year_max", "coverage_level",
+            "plan_type", "county_cv", "corr_national", "class_used", "practice_used",
+            "windfall_rate", "detrend_method")
+    try:
+        rows = conn.execute(
+            f"SELECT {', '.join(cols)} FROM basis_risk_county WHERE crop = ? AND county_fips = ?",
+            (crop, fips)).fetchall()
+    except sqlite3.DatabaseError:
+        return {}
+    out: dict[str, dict] = {}
+    for row in rows:
+        d = dict(zip(cols, tuple(row)))
+        out[str(d["band"])] = d
+    return out
+
+
+def typical_miss_by_band(conn: sqlite3.Connection) -> dict[str, float]:
+    """National average miss rate per band over the whole shipped table — the map's baseline.
+
+    Computed, not quoted: if the shipped basis_risk_county is rebuilt with different
+    assumptions, the sentence on the page moves with it.
+    """
+    if not _table_exists(conn, "basis_risk_county"):
+        return {}
+    try:
+        rows = conn.execute(
+            "SELECT band, AVG(miss_rate) FROM basis_risk_county "
+            "WHERE miss_rate IS NOT NULL GROUP BY band").fetchall()
+    except sqlite3.DatabaseError:
+        return {}
+    return {str(b): float(v) for b, v in rows if v is not None}
+
+
+def county_choices(conn: sqlite3.Connection, crop: str) -> list[tuple[str, str, str]]:
+    """(fips, state, display name) for every county the calculator can answer for, sorted.
+
+    Driven off basis_risk_county rather than off the county series: these are the counties
+    where BOTH halves exist — a measurable farm answer and a published county-typical figure
+    to set it against. Offering a county with no baseline would be offering a number with
+    nothing to compare it to.
+    """
+    if not _table_exists(conn, "basis_risk_county"):
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT county_fips, state, county_name FROM basis_risk_county "
+            "WHERE crop = ? ORDER BY state, county_name", (crop,)).fetchall()
+    except sqlite3.DatabaseError:
+        return []
+    out = []
+    for fips, state, name in rows:
+        f = _fips5(fips)
+        if not f:
+            continue
+        nice = str(name or "").title().strip() or f
+        out.append((f, str(state or ""), f"{nice}, {state}"))
+    return out
+
+
+# ------------------------------------------------------------------ the maths
+
+@dataclass
+class BandOutcome:
+    """One band, scored for THIS farm and for the county-typical farm side by side."""
+    band: str
+    label: str
+    trigger: float
+    exit: float
+    width: float
+    # -- this farm, at its MEASURED correlation, bracketed by that correlation's 90% CI ----
+    farm_miss: float
+    farm_miss_lo: float          # at the TOP of the rho interval: the optimistic end
+    farm_miss_hi: float          # at the BOTTOM of it: the pessimistic end
+    p_hard_miss: float
+    windfall_rate: float
+    windfall_share: float
+    uncovered_share: float
+    payout_corr: float
+    gross_return: float
+    loss_aligned_return: float
+    # -- the same county and the same deductible, at the ASSUMED rho this farm replaces -----
+    assumed_miss: float
+    assumed_rho: float
+    # -- the shipped county-typical row (coverage level 0.85 only) --------------------------
+    published_miss: float | None
+    published_coverage_level: float | None
+    published_grade: str | None
+    national_typical_miss: float | None
+    # -- this farm's own record over the overlapping years ----------------------------------
+    hist_loss_years: list[int]
+    hist_pay_years: list[int]
+    hist_miss_years: list[int]
+    hist_windfall_years: list[int]
+
+    @property
+    def disagreement(self) -> float:
+        """farm miss minus the miss the county-typical assumption would have given it."""
+        return self.farm_miss - self.assumed_miss
+
+
+@dataclass
+class FarmReport:
+    """Everything the page draws. Pure data — no Streamlit anywhere in it, so it is testable."""
+    crop: str
+    county_fips: str
+    county_label: str
+    coverage_level: float
+    plan_type: str
+    farm_detrend: str
+    detrend_method: str
+    # -- the aligned, detrended series both sides are measured on ---------------------------
+    years: list[int]
+    farm_yields: list[float]
+    county_yields: list[float]
+    farm_ratio: list[float]
+    county_ratio: list[float]
+    dropped_years: list[int]
+    county_n_years: int
+    county_year_min: int
+    county_year_max: int
+    county_grade: str | None
+    county_class: str
+    county_practice: str
+    county_source: str
+    # -- the correlation ---------------------------------------------------------------------
+    rho: float
+    rho_ci_lo: float
+    rho_ci_hi: float
+    rho_implied_by_cv: float
+    rho_used: float
+    rho_is_measured: bool
+    assumed_rho: float
+    farm_cv: float
+    county_cv: float
+    farm_trend_pct_per_year: float
+    confidence: dict
+    # -- the decision -------------------------------------------------------------------------
+    bands: list[BandOutcome]
+    best_band: str | None
+    warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def outcome(self) -> dict[str, BandOutcome]:
+        return {b.band: b for b in self.bands}
+
+
+def _verdict(miss: float) -> str:
+    """One plain sentence for a miss rate. No hedging adverbs — the interval does the hedging."""
+    if miss != miss:
+        return "no usable estimate."
+    if miss < 0.15:
+        return ("the county trigger tracks this farm closely — in most years this farm loses "
+                "money, the index is down too and the endorsement pays.")
+    if miss < 0.30:
+        return ("the county trigger usually follows this farm, but roughly one loss year in "
+                "four would collect nothing.")
+    if miss < 0.45:
+        return ("the county trigger follows this farm loosely — about a third of the years "
+                "this farm loses money, the endorsement pays nothing at all.")
+    return ("the county trigger barely follows this farm — nearly half the years this farm "
+            "loses money, the endorsement pays nothing. What is being bought here is mostly "
+            "income, not cover.")
+
+
+def farm_report(series: CountySeries, farm: dict[int, float], *,
+                coverage_level: float = 0.85, plan_type: str = "RP",
+                farm_detrend: str = "county", detrend_method: str = "ols",
+                published: dict[str, dict] | None = None,
+                national: dict[str, float] | None = None,
+                bands: tuple[str, ...] = FARM_BANDS,
+                subsidy: float = FARM_SUBSIDY,
+                n_draws: int = FARM_DRAWS) -> FarmReport:
+    """Score every band for one farm. The whole calculator, with no UI attached.
+
+    Delegates the estimator itself to basisrisk.farm_basis_risk — which detrends both series,
+    aligns them on the overlapping years, measures rho, puts a Fisher interval on it and
+    re-runs the simulation at both ends of that interval. What is added here is the part that
+    answers the producer's actual question rather than reporting a statistic:
+
+      * the SAME county, the SAME deductible, run again at the ASSUMED rho (RHO_REF = 0.70)
+        this farm's measurement replaces. That is the only apples-to-apples comparison there
+        is; the shipped basis_risk_county row is carried alongside it but is built at coverage
+        level 0.85 only and is NOT comparable when the producer insures lower.
+      * every band on the same footing, so "which one" has an answer.
+      * loss-aligned return: the share of the ~5x gross that arrives in a year this farm
+        actually had an in-band loss. The rest is a transfer — real money, but not cover, and
+        it is the same dollars that were missing in the years the loss came and the cheque
+        did not.
+
+    Raises ValueError when the series cannot support an estimate; the caller renders that.
+    """
+    published = published or {}
+    national = national or {}
+    n_common = len(set(farm) & set(int(y) for y in series.years))
+    if n_common < FARM_MIN_YEARS:
+        raise ValueError(
+            f"{n_common} of your years overlap this county's history; we need at least "
+            f"{FARM_MIN_YEARS}. See confidence_for() for why.")
+
+    county_fit = B.detrend(series.years, series.values, detrend_method)
+    price_vol = FARM_PRICE_VOL.get(series.crop, 0.15)
+    corr_nat = series.corr_national if series.corr_national is not None else 0.5
+    farm_years = sorted(farm)
+    farm_vals = [farm[y] for y in farm_years]
+    shared = dict(crop=series.crop, county_fips=series.county_fips,
+                  coverage_level=coverage_level, detrend_method=detrend_method,
+                  farm_detrend=farm_detrend, plan_type=plan_type, price_vol=price_vol,
+                  corr_county_national=corr_nat, n_draws=n_draws)
+
+    outcomes: list[BandOutcome] = []
+    first: B.FarmBasisRisk | None = None
+    skipped: list[str] = []
+    for band in bands:
+        try:
+            B.band_bounds(band, coverage_level)
+        except ValueError as exc:
+            skipped.append(f"{band}: {exc}")
+            continue
+        r = B.farm_basis_risk(farm_years, farm_vals, series.years, series.values,
+                              band=band, **shared)
+        first = first or r
+        assumed = B.basis_risk(county_fit.ratio, band=band, coverage_level=coverage_level,
+                               rho=B.RHO_REF, plan_type=plan_type, price_vol=price_vol,
+                               corr_county_national=corr_nat, n_draws=n_draws)
+        pub = published.get(band) or {}
+        m = r.modelled
+        outcomes.append(BandOutcome(
+            band=band, label=B.BAND_SPECS[band]["label"],
+            trigger=m.trigger, exit=m.exit, width=m.trigger - m.exit,
+            farm_miss=m.miss_rate,
+            # rho_lo is the LOW correlation, which gives the HIGH miss rate. Naming the
+            # outputs after the miss rate rather than after rho is the only way a reader
+            # does not have to hold the inversion in their head.
+            farm_miss_lo=r.modelled_rho_hi.miss_rate,
+            farm_miss_hi=r.modelled_rho_lo.miss_rate,
+            p_hard_miss=m.p_hard_miss, windfall_rate=m.windfall_rate,
+            windfall_share=m.windfall_share, uncovered_share=m.uncovered_share,
+            payout_corr=m.payout_corr,
+            gross_return=1.0 / (1.0 - subsidy),
+            loss_aligned_return=(1.0 - m.windfall_share) / (1.0 - subsidy),
+            assumed_miss=assumed.miss_rate, assumed_rho=B.RHO_REF,
+            published_miss=_f(pub.get("miss_rate")),
+            published_coverage_level=_f(pub.get("coverage_level")),
+            published_grade=(str(pub["grade"]) if pub.get("grade") else None),
+            national_typical_miss=_f(national.get(band)),
+            hist_loss_years=list(r.farm_shortfall_years),
+            hist_pay_years=list(r.historical_pay_years),
+            hist_miss_years=list(r.historical_miss_years),
+            hist_windfall_years=list(r.historical_windfall_years),
+        ))
+
+    if first is None:
+        raise ValueError("no band has any width at this coverage level: " + "; ".join(skipped))
+
+    # WHICH ONE. Every band here carries the same ~5x gross, so ranking on return is ranking
+    # on nothing. The differentiator is how much of that return lands in a year the farm
+    # actually lost, which is loss_aligned_return; miss rate breaks a tie because it is the
+    # thing the producer feels.
+    ranked = sorted(outcomes, key=lambda o: (-o.loss_aligned_return, o.farm_miss))
+    best = ranked[0].band if ranked else None
+
+    conf = confidence_for(first.n_common_years)
+    warnings = list(first.warnings)
+    rho_is_measured = (not math.isnan(first.rho_measured)) and first.rho_measured > 0
+
+    notes: list[str] = []
+    notes.extend(skipped)
+    dropped = sorted(set(farm) - set(first.years))
+    if dropped:
+        notes.append(
+            f"{len(dropped)} of your years had no county figure to pair with and were left "
+            f"out of the correlation: {', '.join(str(y) for y in dropped)}. NASS suppresses a "
+            "county estimate when too few operations report, and a suppressed year is a "
+            "missing year, never a zero.")
+    if series.practice_used:
+        notes.append(
+            f"the county series used is {series.crop} / {series.class_used} / "
+            f"{series.practice_used}. RMA rates and settles SCO and ECO by TYPE AND PRACTICE, "
+            "so an irrigated farm's endorsement triggers on the IRRIGATED county index, not on "
+            "a blended one. If the practice named here does not match the ground being insured, "
+            "the correlation was measured against the wrong index and the answer is not yours.")
+    if published:
+        cls = {p.get("coverage_level") for p in published.values()}
+        if cls and abs(float(next(iter(cls)) or 0) - coverage_level) > 1e-9:
+            notes.append(
+                f"the shipped county-typical figure is built at coverage level "
+                f"{float(next(iter(cls))):.0%} and you are at {coverage_level:.0%}, so the two "
+                "are NOT directly comparable — a lower deductible means fewer, deeper farm "
+                "losses and a different miss rate. The 'if we had assumed 0.70' column is the "
+                "comparison that holds: same county, same deductible, only the correlation "
+                "changes.")
+    else:
+        notes.append("no shipped county-typical row for this county and crop, so the only "
+                     "comparison shown is against the assumed correlation of 0.70.")
+
+    return FarmReport(
+        crop=series.crop, county_fips=series.county_fips, county_label=series.label,
+        coverage_level=coverage_level, plan_type=plan_type, farm_detrend=farm_detrend,
+        detrend_method=detrend_method,
+        years=list(first.years), farm_yields=list(first.farm_yields),
+        county_yields=list(first.county_yields),
+        farm_ratio=_ratios(first.years, first.farm_yields, first, county_fit, which="farm"),
+        county_ratio=_ratios(first.years, first.county_yields, first, county_fit, which="county"),
+        dropped_years=dropped,
+        county_n_years=county_fit.n, county_year_min=county_fit.year_min,
+        county_year_max=county_fit.year_max, county_grade=series.grade,
+        county_class=series.class_used, county_practice=series.practice_used,
+        county_source=series.source,
+        rho=first.rho_measured, rho_ci_lo=first.rho_ci_lo, rho_ci_hi=first.rho_ci_hi,
+        rho_implied_by_cv=first.rho_implied_by_cv, rho_used=first.rho_used,
+        rho_is_measured=rho_is_measured, assumed_rho=B.RHO_REF,
+        farm_cv=first.farm_cv, county_cv=first.county_cv,
+        farm_trend_pct_per_year=first.farm_trend_pct_per_year,
+        confidence=conf, bands=outcomes, best_band=best,
+        warnings=warnings, notes=notes,
+    )
+
+
+def _ratios(years, values, r: B.FarmBasisRisk, county_fit: B.TrendFit, which: str) -> list[float]:
+    """The DETRENDED series the correlation is actually measured on, recovered for display.
+
+    This exists so the page can SHOW the detrending rather than assert it. `farm_basis_risk`
+    keeps the ratios internal; recomputing them here from its own returned alignment is exact
+    for the county side and reproduces the same anchored-trend arithmetic for the farm side.
+    """
+    if which == "county":
+        by_year = county_fit.ratio_by_year()
+        return [float(by_year.get(int(y), float("nan"))) for y in years]
+    import numpy as np
+    yrs = np.asarray([float(y) for y in years])
+    vals = np.asarray([float(v) for v in values])
+    if r.farm_detrend == "none":
+        fit = np.full_like(vals, vals.mean())
+    elif r.farm_detrend == "own":
+        slope, intercept = np.polyfit(yrs, vals, 1)
+        fit = intercept + slope * yrs
+    else:
+        shape = 1.0 + r.farm_trend_pct_per_year * (yrs - yrs.mean())
+        fit = float((vals / shape).mean()) * shape
+    return [float(v) for v in (vals / fit)]
+
+
+# ------------------------------------------------------- the shipped sidecar
+
+def build_county_yield_series(conn: sqlite3.Connection, crops: tuple[str, ...] = FARM_CROPS,
+                              *, min_year: int = 1975, max_year: int | None = None,
+                              verbose: bool = False) -> int:
+    """Reduce nass_county_yield to the compact `county_yield_series` table this page can ship.
+
+    Run it against the WORKING catalog (data/catalog.db), AFTER
+    scripts/analysis/build_basis_risk.py, and before scripts/build_app_db.py:
+
+        .venv/bin/python -m src.rowcroppage --build-county-series
+
+    WHY A TABLE AND NOT A FILE. build_app_db.py copies the working DB whole and then drops a
+    NAMED list of heavy tables. A new small table is therefore shipped automatically, with no
+    change to that file — which matters, because the raw series it is reduced from is on that
+    drop list precisely because it is 795 MB.
+
+    WHAT IT KEEPS. Exactly the series basisrisk.load_series would have picked (live, longest,
+    class-preference tiebreak), stored as two comma-joined strings. One row per county x crop
+    that basis_risk_county already scores, so the calculator can never offer a county it has
+    no baseline to compare against. Roughly 4,900 rows / ~2 MB for the country.
+    """
+    if not _table_exists(conn, "nass_county_yield"):
+        raise RuntimeError(
+            "nass_county_yield is missing — run `.venv/bin/python -m src.refresh "
+            "--source nass_yield --force --no-enrich` against the working catalog first.")
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS {COUNTY_SERIES_TABLE} (
+            crop           TEXT NOT NULL,   -- Corn | Soybeans | Wheat
+            county_fips    TEXT NOT NULL,   -- 5-digit FIPS
+            state          TEXT,
+            county_name    TEXT,
+            class_used     TEXT,            -- the NASS CLASS_DESC load_series settled on
+            practice_used  TEXT,            -- ... and the practice. SCO/ECO settle BY practice.
+            n_years        INTEGER,
+            year_min       INTEGER,
+            year_max       INTEGER,
+            years          TEXT,            -- '1975,1976,...'
+            yields         TEXT,            -- '82.5,91.0,...' aligned to `years`
+            corr_national  REAL,            -- from basis_risk_county; drives the price hedge
+            source         TEXT,
+            fetched_at     TEXT,
+            PRIMARY KEY (crop, county_fips)
+        )""")
+    conn.execute(f"DELETE FROM {COUNTY_SERIES_TABLE}")
+
+    baseline: dict[tuple[str, str], dict] = {}
+    if _table_exists(conn, "basis_risk_county"):
+        for row in conn.execute(
+                "SELECT DISTINCT crop, county_fips, state, county_name, corr_national "
+                "FROM basis_risk_county"):
+            baseline[(str(row[0]), _fips5(row[1]))] = dict(
+                state=row[2], county_name=row[3], corr_national=row[4])
+
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    written = 0
+    for crop in crops:
+        fipses = [_fips5(r[0]) for r in conn.execute(
+            "SELECT DISTINCT loc_key FROM nass_county_yield WHERE crop = ? AND stat = 'YIELD' "
+            "AND agg_level = 'COUNTY' ORDER BY loc_key", (crop,))]
+        for fips in fipses:
+            if baseline and (crop, fips) not in baseline:
+                continue                    # no published baseline: nothing to compare against
+            got = B.load_series(conn, crop, fips, min_year=min_year, max_year=max_year)
+            if not got:
+                continue
+            years, values, cls, prac = got
+            if len(years) < B.MIN_YEARS:
+                continue
+            meta = baseline.get((crop, fips), {})
+            conn.execute(
+                f"INSERT OR REPLACE INTO {COUNTY_SERIES_TABLE} (crop, county_fips, state, "
+                " county_name, class_used, practice_used, n_years, year_min, year_max, years, "
+                " yields, corr_national, source, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (crop, fips, meta.get("state"), meta.get("county_name"), cls, prac,
+                 len(years), min(years), max(years),
+                 ",".join(str(int(y)) for y in years),
+                 ",".join(f"{float(v):g}" for v in values),
+                 meta.get("corr_national"), "nass_qs via rowcroppage", now))
+            written += 1
+        if verbose:
+            print(f"{crop}: {written} rows so far")
+    conn.commit()
+    return written
+
+
+# ---------------------------------------------------------------- the UI
+
+def _farm_db_path() -> str:
+    """Same resolution order as render(): explicit override, shipped slim DB, working DB."""
+    import os
+
+    from . import config
+    app_db = config.DATA_DIR / "catalog_app.db"
+    return (os.environ.get("AIP_DB_PATH")
+            or (str(app_db) if app_db.exists() else str(config.DB_PATH)))
+
+
+_FARM_HELPERS: dict = {}
+
+
+def _farm_streamlit_helpers() -> dict:
+    """Cached readers, built once per process. Same reasoning as _streamlit_helpers above.
+
+    NOTE THE PARAMETER NAMES: st.cache_data drops underscore-prefixed arguments from the cache
+    key entirely, so every cache-BUSTER here (db_mtime, code_ver) is bare. tests/
+    test_cache_keys.py enforces this across the whole app.
+    """
+    if _FARM_HELPERS:
+        return _FARM_HELPERS
+    import streamlit as st
+
+    @st.cache_data(show_spinner=False)
+    def _counties(db_mtime: float, path: str, crop: str):
+        return county_choices(_streamlit_helpers()["open"](path), crop)
+
+    @st.cache_data(show_spinner=False)
+    def _typical(db_mtime: float, path: str):
+        return typical_miss_by_band(_streamlit_helpers()["open"](path))
+
+    @st.cache_data(show_spinner=False)
+    def _series(db_mtime: float, path: str, crop: str, fips: str):
+        s = load_county_series(_streamlit_helpers()["open"](path), crop, fips)
+        return None if s is None else s.__dict__
+
+    @st.cache_data(show_spinner="Measuring your farm against its county…")
+    def _report(db_mtime: float, code_ver: float, path: str, crop: str, fips: str,
+                pairs: tuple, coverage_level: float, plan_type: str, farm_detrend: str):
+        raw = _series(db_mtime, path, crop, fips)
+        if raw is None:
+            return None
+        conn = _streamlit_helpers()["open"](path)
+        return farm_report(
+            CountySeries(**raw), {int(y): float(v) for y, v in pairs},
+            coverage_level=coverage_level, plan_type=plan_type, farm_detrend=farm_detrend,
+            published=published_basis_risk(conn, crop, fips),
+            national=typical_miss_by_band(conn))
+
+    _FARM_HELPERS.update(counties=_counties, typical=_typical, series=_series, report=_report)
+    return _FARM_HELPERS
+
+
+def _pct(x, nd: int = 1, dash: str = "—") -> str:
+    if x is None or (isinstance(x, float) and math.isnan(x)):
+        return dash
+    return f"{float(x) * 100:.{nd}f}%"
+
+
+def _years_str(years) -> str:
+    return ", ".join(str(y) for y in years) if years else "none"
+
+
+def render_farm_calculator() -> None:
+    """The producer-facing calculator, as rowcroppage.render_farm_calculator().
+
+    Reachable from the Row Crop tab. Renders an explanation and an input form on first load;
+    it computes nothing until the producer supplies a series, and it never falls back to the
+    county-typical answer while presenting it as a farm answer.
+    """
+    import os
+
+    import streamlit as st
+
+    st.subheader("My farm — is a county-triggered band worth it for THIS operation?")
+    st.markdown(
+        "Everything else on this page is **county-typical**. It assumes every farm in the "
+        "country moves with its county at a correlation of **0.70**, because no public data "
+        "says otherwise — and that one assumption swings the answer about **2x** (nationally "
+        "the SCO86 miss rate averages 0.455 at a correlation of 0.55 and 0.235 at 0.85).\n\n"
+        "You can replace it. Read your harvested yields off your APH / production schedule "
+        "below and this measures **your** correlation to **your** county, and **your** miss "
+        "rate — the share of the years you lose money in which a county-index endorsement "
+        "would pay you nothing.\n\n"
+        "**This is not a quote and not a recommendation to buy or decline anything.** It "
+        "sizes one risk."
+    )
+
+    helpers = _farm_streamlit_helpers()
+    path = _farm_db_path()
+
+    def _mtime(p) -> float:
+        try:
+            return os.path.getmtime(p)
+        except OSError:
+            return 0.0
+
+    db_mtime = _mtime(path)
+
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c1:
+        crop = st.selectbox("Crop", FARM_CROPS, index=0, key="rc_farm_crop")
+    try:
+        counties = helpers["counties"](db_mtime, path, crop)
+    except Exception as exc:                                     # never take the tab down
+        st.error(f"Could not read the county list: {exc}")
+        return
+    with c2:
+        if counties:
+            labels = [c[2] for c in counties]
+            pick = st.selectbox("County", labels, index=0, key="rc_farm_county",
+                                help="Counties where a published county-typical figure exists "
+                                     "to measure your own answer against.")
+            fips = counties[labels.index(pick)][0]
+        else:
+            fips = st.text_input("County FIPS (5 digits)", value="", key="rc_farm_fips")
+    with c3:
+        coverage_level = st.selectbox(
+            "Your MPCI coverage level", [0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50],
+            index=0, format_func=lambda v: f"{v:.0%}", key="rc_farm_cl",
+            help="Your own deductible on the underlying policy. It is what defines 'a loss' "
+                 "here — not the endorsement's trigger.")
+
+    c4, c5 = st.columns([1, 3])
+    with c4:
+        plan_type = st.selectbox(
+            "Plan", ["RP", "YP"], index=0, key="rc_farm_plan",
+            help="Revenue Protection carries LESS basis risk than Yield Protection: the "
+                 "harvest price is national, so the price leg of the index cannot miss "
+                 "anybody.")
+        first_year = st.number_input(
+            "First (oldest) year", min_value=1950, max_value=2100,
+            value=max(1975, _dt.date.today().year - 10), step=1, key="rc_farm_first_year",
+            help="Only needed if you paste a bare list of yields with no years on them.")
+        trend_adjusted = st.checkbox(
+            "These are trend-adjusted (TA-APH) yields", value=False, key="rc_farm_ta",
+            help="TA-APH and APH-capped yields have already had the trend taken out and the "
+                 "bad years floored. Tick this and we will not detrend them again — but the "
+                 "flooring is not reversible, and it truncates exactly the bad years this "
+                 "calculation needs, so the answer will read optimistic either way.")
+    with c5:
+        text = st.text_area(
+            "Your harvested yields, oldest first",
+            height=190, key="rc_farm_yields",
+            placeholder=("2016: 178\n2017: 201\n2018: 165\n2019: 212\n2020: 109\n2021: 198\n"
+                         "2022: 206\n2023: 183\n2024: 214\n2025: 190\n\n"
+                         "…or just: 178, 201, 165, 212, 109, 198, 206, 183, 214, 190"),
+            help="One year per line, or a comma list. RAW harvested bu/ac, not trend-adjusted "
+                 "and not APH-capped, for as many years as you have. Leave a year blank "
+                 "(or type NA) if you did not grow the crop.")
+        run = st.button("Measure my farm", type="primary", key="rc_farm_run")
+
+    farm, problems = parse_aph_series(text, int(first_year))
+    for p in problems:
+        st.warning(p)
+    if not text.strip():
+        st.caption(
+            f"Nothing entered yet. The minimum is **{FARM_MIN_YEARS} years** that overlap the "
+            f"county's history, and we withhold a point estimate below **{FARM_POINT_YEARS}** "
+            "— see the note under the result for why.")
+        return
+    if not farm:
+        return
+    if not run:
+        st.caption(f"Read {len(farm)} year(s): {min(farm)}–{max(farm)}. "
+                   "Press **Measure my farm** to run it.")
+        return
+    if not fips:
+        st.info("Pick a county first.")
+        return
+
+    conf = confidence_for(len(farm))
+    if len(farm) < FARM_MIN_YEARS:
+        st.error(f"**{conf['headline']}**\n\n{conf['detail']}")
+        return
+
+    try:
+        report = helpers["report"](db_mtime, _mtime(__file__), path, crop, fips,
+                                   tuple(sorted(farm.items())), float(coverage_level),
+                                   plan_type, "none" if trend_adjusted else "county")
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    except Exception as exc:                                     # never take the tab down
+        st.error(f"Could not run the calculation: {exc}")
+        return
+
+    if report is None:
+        st.info(
+            f"This database has no year-by-year yield history for {crop} in county {fips}, so "
+            "there is nothing to measure your series against — and we will not substitute the "
+            "county-typical answer and call it yours.\n\n"
+            f"The calculator reads `{COUNTY_SERIES_TABLE}` (the compact shipped series) or "
+            "`nass_county_yield` (the full history, dropped from the shipped app DB at "
+            "795 MB). To load them into the working catalog:\n\n"
+            "```\n"
+            ".venv/bin/python -m src.refresh --source nass_yield --force --no-enrich\n"
+            "python scripts/analysis/build_basis_risk.py\n"
+            ".venv/bin/python -m src.rowcroppage --build-county-series\n"
+            "```")
+        return
+
+    _render_farm_report(st, report)
+
+
+def _render_farm_report(st, r: FarmReport) -> None:
+    """Draw a FarmReport. Split out so the layout is separable from the arithmetic."""
+    import pandas as pd
+
+    if not r.rho_is_measured:
+        st.error(
+            "**This result is NOT farm-specific.** Your yields did not produce a usable "
+            "correlation to the county, so the calculation fell back to the assumed 0.70 — the "
+            "same figure the map already uses. Read the warnings below before using any number "
+            "on this page; the usual cause is the wrong county, the wrong crop, an irrigated "
+            "farm against a dryland county series, or yields in the wrong unit.")
+
+    conf = r.confidence
+    st.markdown(f"### {r.crop} — {r.county_label}, at {r.coverage_level:.0%} {r.plan_type}")
+
+    # ---- 1. the correlation, with its interval front and centre -------------------------
+    st.markdown("#### Your correlation to your county")
+    a, b, c = st.columns(3)
+    if conf["show_point"] and r.rho_is_measured:
+        a.metric("Measured, your farm", f"{r.rho:.2f}",
+                 help="Pearson correlation of your DETRENDED yields with the county's "
+                      "detrended yields, over the years both have.")
+    else:
+        a.metric("Measured, your farm", "range only",
+                 help="Too few years to print a point estimate. See the interval beside it.")
+    if math.isnan(r.rho_ci_lo) or math.isnan(r.rho_ci_hi):
+        b.metric("90% interval", "n/a",
+                 help="Undefined at this sample size or at a correlation of exactly 1.")
+    else:
+        b.metric("90% interval", f"{r.rho_ci_lo:.2f} to {r.rho_ci_hi:.2f}",
+                 help="Fisher z interval. Its width is 1/sqrt(n-3) — the only thing that "
+                      "narrows it is more years of your own records.")
+    c.metric("What the map assumes", f"{r.assumed_rho:.2f}",
+             delta=(None if not r.rho_is_measured else f"{r.rho - r.assumed_rho:+.2f} vs yours"),
+             delta_color="off",
+             help="RHO_REF in src/basisrisk.py — the same number for every county in the "
+                  "United States.")
+    st.caption(f"**{conf['headline']}** {conf['detail']}")
+
+    if r.rho_is_measured:
+        gap = r.rho - r.assumed_rho
+        if abs(gap) < 0.05:
+            st.info(
+                "Your measured correlation and the assumed 0.70 agree closely. That is a real "
+                "result, not a null one: the county-typical figure happens to describe this "
+                "farm, and now that is something you have checked rather than inherited.")
+        else:
+            direction = "HIGHER" if gap > 0 else "LOWER"
+            consequence = ("less basis risk than the map shows for this county"
+                           if gap > 0 else "MORE basis risk than the map shows for this county")
+            st.warning(
+                f"**Your farm and the county-typical figure disagree.** Your measured "
+                f"correlation is {abs(gap):.2f} {direction} than the 0.70 the map assumes, "
+                f"which means {consequence}. Use the farm figure — not because it is more "
+                f"convenient, but because it is **measured** from this operation's own yields "
+                f"while 0.70 is **assumed** for the whole country. Carry the interval with it: "
+                f"the honest answer is the range, and the range is wide at "
+                f"{len(r.years)} years.")
+
+    # ---- 2. proof of the detrend-and-align step -----------------------------------------
+    with st.expander(f"The {len(r.years)} years this was measured on — detrended and aligned",
+                     expanded=False):
+        st.caption(
+            "Correlating raw yields would be close to meaningless: both series trend upward "
+            "with technology, and a shared trend alone produces a high correlation that says "
+            "nothing about shared weather. Both sides are converted to a RATIO against a "
+            f"fitted trend first — the county by {r.detrend_method.upper()} over its full "
+            f"{r.county_n_years}-year history ({r.county_year_min}–{r.county_year_max}), your "
+            + ("farm to its own mean because you told us the yields are already "
+               "trend-adjusted." if r.farm_detrend == "none" else
+               f"farm at the county's own {r.farm_trend_pct_per_year:+.2%}/yr trend rate, "
+               "anchored on your mean, because an APH series is far too short to fit a trend "
+               "to without the fit eating the very variability we are trying to measure.")
+            + " A ratio of 1.00 is an average year. Only the years BOTH series have are used.")
+        rows = []
+        pay_years = set(r.bands[0].hist_pay_years) if r.bands else set()
+        for i, y in enumerate(r.years):
+            fr = r.farm_ratio[i] if i < len(r.farm_ratio) else float("nan")
+            cr = r.county_ratio[i] if i < len(r.county_ratio) else float("nan")
+            rows.append({
+                "Year": y,
+                "Your yield": round(r.farm_yields[i], 1),
+                "Your ratio to trend": round(fr, 3),
+                "County yield": round(r.county_yields[i], 1),
+                "County ratio to trend": round(cr, 3),
+                f"You below {r.coverage_level:.0%}?": "LOSS" if fr < r.coverage_level else "",
+                f"{r.bands[0].band} pays?": "pays" if y in pay_years else "",
+            })
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        st.caption(
+            f"Your detrended variability (CV) is {r.farm_cv:.3f} against the county's "
+            f"{r.county_cv:.3f}. Under the farm = county + independent shock model those two "
+            f"imply a correlation of {r.rho_implied_by_cv:.2f}, which is a second, independent "
+            "read on the same quantity — if it is far from the measured figure above, treat "
+            "both as soft.")
+        if r.dropped_years:
+            st.caption("Years left out: " + _years_str(r.dropped_years))
+
+    # ---- 3. the decision: every band, on the same footing --------------------------------
+    st.markdown("#### Which band, for this farm")
+    st.caption(
+        "Every one of these carries the same ~80% premium subsidy, so at FCIC's statutory "
+        "target loss ratio of 1.0 (7 U.S.C. 1506(n)(2)) the gross expected return is "
+        f"{1 / (1 - FARM_SUBSIDY):.1f}x per producer dollar — an arithmetic identity, identical "
+        "for every farm in the country and for every band in this table. **Basis risk is the "
+        "entire difference between them.** A deeper county trigger fires in fewer years and "
+        "therefore misses more of your losses, which is why the order below is always the "
+        "same and why it is not a close call.")
+    # TWO SUPPRESSIONS, and they are the honesty of this table.
+    #
+    # `measured` — when the correlation could NOT be measured, `farm_miss` IS the assumed-0.70
+    #   answer under a different heading. Printing it in a column called "YOUR miss rate" would
+    #   be exactly the substitution this whole section exists to refuse.
+    # `precise`  — a miss rate is a deterministic function of rho, so a point miss rate is a
+    #   point rho wearing a different unit. Having withheld the correlation's point estimate
+    #   above FARM_POINT_YEARS, printing "31.7%" here would hand it straight back. Below that
+    #   threshold the RANGE is the answer and the point column says so.
+    measured = r.rho_is_measured
+    precise = measured and r.confidence["show_point"]
+    rows = []
+    for o in r.bands:
+        rng = f"{_pct(o.farm_miss_lo, 0)} – {_pct(o.farm_miss_hi, 0)}"
+        rows.append({
+            "Band": o.band,
+            "Pays from → to": f"{o.trigger:.0%} → {o.exit:.0%}",
+            "Width": f"{o.width * 100:.0f} pts",
+            "YOUR miss rate": (_pct(o.farm_miss) if precise else
+                               ("range only →" if measured else "not measurable")),
+            "…range on your correlation": rng if measured else "—",
+            "If we assumed 0.70": _pct(o.assumed_miss),
+            "County-typical, published": _pct(o.published_miss),
+            "US average": _pct(o.national_typical_miss),
+            "Your loss years it misses": f"{len(o.hist_miss_years)} of {len(o.hist_loss_years)}",
+            "Of the 5x, arrives in a loss year": (
+                f"{o.loss_aligned_return:.2f}x" if measured else "—"),
+        })
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    st.caption(
+        "**YOUR miss rate** = the chance the band pays nothing in a year you had a loss beyond "
+        f"your {r.coverage_level:.0%} deductible. **…range** is that same figure re-run at both "
+        "ends of the 90% interval on your correlation — it is the honest width of the answer, "
+        "and at a short APH history it is wide. **If we assumed 0.70** is the same county, the "
+        "same deductible and the same simulation with only the correlation swapped back to the "
+        "map's assumption: that column is the apples-to-apples measure of what your own records "
+        "bought you. **Of the 5x** is the share of the gross return that lands in a year you "
+        "actually had an in-band loss; the rest is real income but it is a transfer, not cover.")
+
+    best = r.outcome.get(r.best_band) if r.best_band else None
+    if best is not None and precise:
+        st.success(
+            f"**For this farm, {best.band} is the least-missing of the three.** "
+            f"At your measured correlation it pays nothing in about {_pct(best.farm_miss)} of "
+            f"your loss years (range {_pct(best.farm_miss_lo, 0)}–{_pct(best.farm_miss_hi, 0)}), "
+            f"against {_pct(best.assumed_miss)} if we had simply assumed 0.70. In plain terms: "
+            f"{_verdict(best.farm_miss)}")
+    elif best is not None and measured:
+        st.success(
+            f"**For this farm, {best.band} is the least-missing of the three.** On "
+            f"{len(r.years)} years the answer is a range, not a number: it pays nothing in "
+            f"somewhere between {_pct(best.farm_miss_lo, 0)} and {_pct(best.farm_miss_hi, 0)} "
+            f"of your loss years, against {_pct(best.assumed_miss)} if we had simply assumed "
+            "0.70. The ordering of the three bands is solid even at this sample size; the "
+            "level is not.")
+    elif best is not None:
+        st.info(
+            f"On the assumed 0.70 — which is NOT your farm — {best.band} would be the "
+            "least-missing of the three, as it is nearly everywhere. That ordering is a "
+            "property of the products, not of this operation: a deeper county trigger fires "
+            "less often and so misses more. Nothing on this page is farm-specific until the "
+            "correlation above can be measured.")
+    st.caption(
+        "Two things that table cannot decide for you. **ECO and SCO are not alternatives** — "
+        "ECO covers 95% (or 90%) down to 86% of the expected county figure and SCO covers 86% "
+        "down to your own coverage level, so they are adjacent, non-overlapping slices and can "
+        "be bought together; only ECO90 and ECO95 are mutually exclusive, being two triggers "
+        f"for the same endorsement. And at {r.coverage_level:.0%} coverage SCO is "
+        f"{(0.86 - r.coverage_level) * 100:.0f} point(s) wide, so however it scores there may "
+        "simply be very little of it to buy. Price, eligibility and what is actually offered "
+        "on your acres are not in this page at all.")
+
+    # ---- 4. their own record ---------------------------------------------------------------
+    st.markdown("#### What actually happened, in your own years")
+    hist = []
+    for o in r.bands:
+        hist.append({
+            "Band": o.band,
+            f"Years you were below {r.coverage_level:.0%}": _years_str(o.hist_loss_years),
+            "Years it would have paid": _years_str(o.hist_pay_years),
+            "You lost and it would NOT have paid": _years_str(o.hist_miss_years),
+            "It would have paid with no loss to you": _years_str(o.hist_windfall_years),
+        })
+    st.dataframe(pd.DataFrame(hist), width="stretch", hide_index=True)
+    st.caption(
+        f"{len(r.years)} years is your record, not a frequency. It is the most concrete thing "
+        "on this page and the least statistically reliable — one bad year more or less moves "
+        "every count. The modelled figures above exist precisely because counting your own "
+        "years cannot answer the question on its own.")
+
+    # ---- 5. everything we are not sure about ------------------------------------------------
+    for w in r.warnings:
+        st.warning(w)
+    with st.expander("What this does and does not know", expanded=False):
+        st.markdown(
+            f"- The **county side is measured**: {r.county_n_years} years of NASS county yield "
+            f"history ({r.county_year_min}–{r.county_year_max}), data grade "
+            f"{r.county_grade or '—'} (A ≥ 30 years, B 20–29, C 12–19), series "
+            f"`{r.county_class} / {r.county_practice}`, read from `{r.county_source}`.\n"
+            f"- The **farm side is a model** — `farm = county + independent idiosyncratic "
+            "shock` (src/basisrisk.py). What your APH changes is the model's one free "
+            "parameter, from an assumption to a measurement. It does not make the model right.\n"
+            "- The idiosyncratic shock is drawn SYMMETRIC by default. Real farm-specific "
+            "shocks (hail, one flooded bottom, a localized storm) are left-skewed, so these "
+            "figures if anything **understate** basis risk.\n"
+            "- Not modelled at all: prevented planting, replant, quality adjustment, "
+            "enterprise-unit structure, MCO's margin trigger, or STAX.\n"
+            "- **Not a quote.** No premium, no eligibility check, no offer. Whether these "
+            "endorsements are available on your acres, and at what price, is not on this page.")
+        for n in r.notes:
+            st.markdown(f"- {n}")
 
 
 # The template uses __TOKENS__ (not str.format) so the JS braces stay literal.
@@ -2207,3 +3477,50 @@ var DATA = __PAYLOAD__;
 </body>
 </html>
 """
+
+
+def _main(argv=None) -> int:
+    """Offline entry points: write the static page, or build the shippable county series.
+
+        .venv/bin/python -m src.rowcroppage                        # write output/rowcrop_page.html
+        .venv/bin/python -m src.rowcroppage --build-county-series  # reduce nass_county_yield
+
+    The second one belongs in scripts/rebuild_rest.sh AFTER build_basis_risk.py and BEFORE
+    build_app_db.py — see build_county_yield_series for why it has to be in that order.
+    """
+    import argparse
+
+    from . import config
+
+    ap = argparse.ArgumentParser(description=_main.__doc__.splitlines()[0])
+    ap.add_argument("--db", default=str(config.DB_PATH),
+                    help="the WORKING catalog (nass_county_yield is dropped from the app DB)")
+    ap.add_argument("--build-county-series", action="store_true",
+                    help=f"(re)build {COUNTY_SERIES_TABLE} from nass_county_yield")
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--year", type=int, default=None)
+    args = ap.parse_args(argv)
+
+    if args.build_county_series:
+        conn = sqlite3.connect(args.db)
+        conn.execute("PRAGMA busy_timeout = 60000")
+        try:
+            n = build_county_yield_series(conn, verbose=True)
+        finally:
+            conn.close()
+        size = "?"
+        try:
+            c = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
+            size = f"{c.execute(f'SELECT SUM(LENGTH(years) + LENGTH(yields)) FROM {COUNTY_SERIES_TABLE}').fetchone()[0] / 1e6:.1f} MB of series"
+            c.close()
+        except sqlite3.DatabaseError:
+            pass
+        print(f"wrote {n:,} rows to {COUNTY_SERIES_TABLE} in {args.db} ({size})")
+        return 0
+
+    generate(db_path=args.db, out_path=args.out, year=args.year)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

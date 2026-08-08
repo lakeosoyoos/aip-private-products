@@ -15,11 +15,19 @@ import tempfile
 import streamlit as st
 
 from src import config
-from src.prfmap import build_prf_payload, render_prf_html
-from src.prfoptmap import build_opt_payload, render_opt_html
+from src.prfpage import build_prf_page_payload, render_prf_page_html
 from src.stack import FEDERAL_BANDS, LAYERS, classified_products
 from src.webapp import auth, data
 from src.webmap import build_payload, ensure_assets, render_html
+
+# DRP (Dairy Revenue Protection) page — optional. The module is being built
+# separately; until it lands the DRP tab renders a short notice instead of
+# taking the whole app down with an ImportError. Deliberately broad: a
+# half-written module can raise anything at import time.
+try:
+    from src import drppage
+except Exception:
+    drppage = None
 
 st.set_page_config(
     page_title="AIP Crop-Insurance Catalog",
@@ -118,18 +126,17 @@ def _render_ver() -> float:
     change (e.g. the PRF slider) doesn't touch the DB, so without this the DB-mtime cache key
     would serve the old map HTML on a reused container. Git checkout stamps a fresh mtime each
     deploy, so this busts the cache whenever the map code changes."""
-    import src.prfmap
-    import src.prfoptmap
+    import src.prfpage
     import src.webmap
     try:
         return max(os.path.getmtime(m.__file__)
-                   for m in (src.prfmap, src.prfoptmap, src.webmap))
+                   for m in (src.prfpage, src.webmap))
     except OSError:
         return 0.0
 
 
 @st.cache_data(show_spinner="Building the interactive map…")
-def _map_html(_mtime: float, _ver: float) -> str:
+def _map_html(db_mtime: float, render_ver: float) -> str:
     """Full offline map HTML, generated in-memory. Cached on DB mtime + render-code version."""
     assets = ensure_assets()
     payload = build_payload(_conn())
@@ -142,22 +149,50 @@ def _map_html(_mtime: float, _ver: float) -> str:
     )
 
 
-@st.cache_data(show_spinner=False)
-def _prf_row_count(_mtime: float) -> int:
-    """Rows in prf_county; 0 (not an error) when empty or the table is missing."""
+def _prf_seed_mtime() -> float:
+    """Cache-buster for the PRF page's hand-edited seed input.
+
+    data/seed/aip_commission.csv carries the agency's negotiated commission rate per AIP,
+    which the "commission per acre" metric multiplies into every shaded county. Editing it
+    touches neither the DB nor any render module, so without this key the cached map HTML
+    would keep serving the rates that were in the file when the container warmed."""
+    import src.prfpage
+
     try:
-        return _conn().execute("SELECT COUNT(*) FROM prf_county").fetchone()[0]
-    except Exception:
-        return 0
+        return os.path.getmtime(src.prfpage.COMMISSION_CSV)
+    except OSError:
+        return 0.0
 
 
-@st.cache_data(show_spinner="Building the PRF heat map…")
-def _prf_html(_mtime: float, _ver: float) -> str:
-    """Self-contained PRF choropleth. Cached on DB mtime + render-code version."""
+@st.cache_data(show_spinner=False)
+def _prf_row_counts(db_mtime: float) -> tuple[int, int]:
+    """(prf_county rows, prf_opt_best rows). 0 — not an error — when empty/missing."""
+    def _n(table: str) -> int:
+        try:
+            return _conn().execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        except Exception:
+            return 0
+
+    return _n("prf_county"), _n("prf_opt_best")
+
+
+@st.cache_data(show_spinner="Building the PRF map…")
+def _prf_page_html(db_mtime: float, render_ver: float, seed_mtime: float) -> str:
+    """Self-contained merged PRF choropleth (all five metrics in one page).
+
+    Cached on DB mtime + render-code version + commission-seed mtime.
+
+    NOTE THE PARAMETER NAMES. st.cache_data deliberately EXCLUDES underscore-prefixed
+    arguments from the cache key (cache_utils: "Not hashing %s because it starts with _"),
+    which is how you pass an unhashable connection. A cache-BUSTER must therefore not be
+    underscore-prefixed, or the key is empty and the first render is served forever — which
+    is exactly what happened when editing data/seed/aip_commission.csv changed nothing on a
+    warm container.
+    """
     assets = ensure_assets()
-    payload = build_prf_payload(_conn())
+    payload = build_prf_page_payload(_conn())
     atlas = json.loads(assets["counties-10m.json"])
-    return render_prf_html(
+    return render_prf_page_html(
         payload,
         d3_js=assets["d3.v7.min.js"],
         topojson_js=assets["topojson-client.min.js"],
@@ -166,50 +201,27 @@ def _prf_html(_mtime: float, _ver: float) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def _prf_opt_row_count(_mtime: float) -> int:
-    """Rows in prf_opt_best; 0 (not an error) when empty or the table is missing."""
-    try:
-        return _conn().execute("SELECT COUNT(*) FROM prf_opt_best").fetchone()[0]
-    except Exception:
-        return 0
-
-
-@st.cache_data(show_spinner="Building the PRF Optimizer map…")
-def _prf_opt_html(_mtime: float, _ver: float) -> str:
-    """Self-contained PRF Optimizer choropleth. Cached on DB mtime + render-code version."""
-    assets = ensure_assets()
-    payload = build_opt_payload(_conn())
-    atlas = json.loads(assets["counties-10m.json"])
-    return render_opt_html(
-        payload,
-        d3_js=assets["d3.v7.min.js"],
-        topojson_js=assets["topojson-client.min.js"],
-        atlas=atlas,
-    )
-
-
-@st.cache_data(show_spinner=False)
-def _products_df(_mtime: float):
+def _products_df(db_mtime: float):
     return data.products_dataframe(_conn())
 
 
 @st.cache_data(show_spinner=False)
-def _serff_df(_mtime: float):
+def _serff_df(db_mtime: float):
     return data.serff_dataframe(_conn())
 
 
 @st.cache_data(show_spinner=False)
-def _classified(_mtime: float):
+def _classified(db_mtime: float):
     return classified_products(_conn())
 
 
 @st.cache_data(show_spinner=False)
-def _counts(_mtime: float):
+def _counts(db_mtime: float):
     return data.catalog_counts(_conn())
 
 
 @st.cache_data(show_spinner="Building the workbook…")
-def _xlsx_bytes(_mtime: float) -> bytes:
+def _xlsx_bytes(db_mtime: float) -> bytes:
     """Full catalog workbook generated in-memory (no committed xlsx needed). Cached on DB mtime."""
     from src.export_xlsx import build_workbook
 
@@ -227,6 +239,35 @@ def _xlsx_bytes(_mtime: float) -> bytes:
 
 
 # -------------------------------------------------------------------- tabs
+#
+# The tab bar is PRODUCT-FIRST: one top-level tab per insurance product line
+# (Row Crop / PRF / LRP / DRP). Everything that is *about the row-crop catalog*
+# — the availability map, the product table, the coverage-stack analysis and
+# the SERFF filing history — lives as a sub-section inside "Row Crop" rather
+# than as four sibling tabs competing with the product lines.
+def _tab_row_crop(mtime: float) -> None:
+    """Row-crop catalog: Map / Products / Stack / SERFF Filings as sub-tabs.
+
+    Nested st.tabs is intentional — each sub-section keeps its own full body,
+    and the widget keys inside them are namespaced (`rc_prod_*`, `rc_serff_*`)
+    so nesting can never raise DuplicateWidgetID against another product tab.
+    """
+    st.subheader("Row crop")
+    st.caption(
+        "The row-crop private/508(h) catalog — availability map, product table, "
+        "coverage-stack analysis, and the SERFF filing history behind it."
+    )
+    sub = st.tabs(["Map", "Products", "Stack", "SERFF Filings"])
+    with sub[0]:
+        _tab_map(mtime)
+    with sub[1]:
+        _tab_products(mtime)
+    with sub[2]:
+        _tab_stack(mtime)
+    with sub[3]:
+        _tab_serff(mtime)
+
+
 def _tab_map(mtime: float) -> None:
     st.subheader("Interactive availability map")
     st.caption(
@@ -238,47 +279,57 @@ def _tab_map(mtime: float) -> None:
 
 
 def _tab_prf(mtime: float) -> None:
-    st.subheader("PRF County Base Value heat map")
+    st.subheader("PRF — Pasture, Rangeland, Forage (rainfall index)")
     st.caption(
-        "PRF (Pasture, Rangeland, Forage — rainfall index). The **County Base "
-        "Value (CBV)** is the per-acre county dollar figure that scales PRF "
-        "protection: protection = acres × productivity factor × coverage level × "
-        "CBV. The embedded map has its own intended-use (Grazing / Haying), "
-        "irrigation-practice (Irrigated / Non-Irrigated), organic, and year "
-        "dropdowns; darker counties carry a higher $/acre CBV, and counties with "
-        "no value for the current selection are shown neutral."
+        "One map, five views — pick one from the **Show** dropdown inside the map:\n\n"
+        "- **County multiplier — CBV (\\$/acre)** — the RMA per-acre county dollar "
+        "figure that scales PRF protection (acres × productivity factor × coverage "
+        "level × CBV).\n"
+        "- **Best win rate (%)** — share of historical years the best interval "
+        "allocation returned a positive net.\n"
+        "- **Best return per \\$1 of protection** — average net return per \\$1, "
+        "the sweep's stored, scale-free figure.\n"
+        "- **Best return per ACRE (\\$)** — computed as `best net × CBV × coverage "
+        "level × productivity factor`; the productivity factor is your own election "
+        "(RMA allows 60–150%, default 100%) and appears as an input on the page.\n"
+        "- **Commission per acre (\\$)** — your side of the deal, not the producer's: "
+        "`CBV × coverage × productivity × Σ(allocation × premium rate) × commission %`, "
+        "priced on the optimizer's **recommended** (best-net) allocation. Agent "
+        "commission is a percent of **total** premium, and premium is the CBV scaled by a "
+        "*premium rate* the CBV view leaves out — one that varies several-fold between "
+        "grids at the same coverage, so this map ranks counties differently from the CBV "
+        "map. Pick which AIP's rate to apply with the **AIP** selector; rates are your "
+        "own negotiated numbers, hand-entered in `data/seed/aip_commission.csv` "
+        "(they ship blank, and the map says so until you fill them in).\n\n"
+        "Optimizer figures come from simulating all **59,536 valid interval-allocation "
+        "policies** (2–5 non-adjacent two-month intervals, 5% steps, 10–60% each, "
+        "summing to 100%) per grid over the RMA rainfall-index history; a county shows "
+        "the **best result among the grids it touches**. One intended-use control "
+        "(Grazing / Haying / Haying-Irrigated) drives both datasets. Counties with no "
+        "data for the current selection stay neutral — nothing is inferred."
     )
-    if _prf_row_count(mtime) == 0:
+    cbv_rows, opt_rows = _prf_row_counts(mtime)
+    if cbv_rows == 0 and opt_rows == 0:
         st.info(
-            "PRF data not loaded yet — run the `prf_adm` connector to populate the "
-            "`prf_county` table (County Base Values). The heat map will appear here "
-            "once values are loaded."
+            "No PRF data loaded yet — run the `prf_adm` connector to populate "
+            "`prf_county` (County Base Values) and the sweep to populate "
+            "`prf_opt_best`. The map appears here once either lands."
         )
         return
-    st.components.v1.html(_prf_html(mtime, _render_ver()), height=820, scrolling=True)
-
-
-def _tab_prf_opt(mtime: float) -> None:
-    st.subheader("PRF Optimizer — best interval allocation by county")
-    st.caption(
-        "For every PRF grid, all **59,536 valid interval-allocation policies** "
-        "(2–5 non-adjacent two-month intervals, 5% steps, 10–60% each, summing "
-        "to 100%) are simulated over the 2006–2024 RMA rainfall-index history "
-        "at 90% coverage. Shading = the **best achievable metric among the "
-        "county's grids** — toggle between best win rate (share of years with "
-        "positive net) and best average net return, which is **per \\$1 of "
-        "protection** (multiply by CBV × 0.90 × productivity factor for "
-        "\\$/acre). Hover a county for each grid's winning allocations; the "
-        "range slider filters counties by metric value."
-    )
-    if _prf_opt_row_count(mtime) == 0:
-        st.info(
-            "Optimizer sweep not run yet — the `prf_opt_best` table is empty. "
-            "Run the sweep to populate per-grid best allocations; the heat map "
-            "will appear here (and shade progressively) as results land."
+    if cbv_rows == 0:
+        st.warning(
+            "County Base Values (`prf_county`) are empty — the CBV and "
+            "return-per-acre views will render neutral until the `prf_adm` "
+            "connector is run."
         )
-        return
-    st.components.v1.html(_prf_opt_html(mtime, _render_ver()), height=820, scrolling=True)
+    if opt_rows == 0:
+        st.warning(
+            "The optimizer sweep (`prf_opt_best`) is empty — the win-rate, "
+            "return-per-\\$1 and return-per-acre views will render neutral "
+            "until the sweep is run."
+        )
+    st.components.v1.html(_prf_page_html(mtime, _render_ver(), _prf_seed_mtime()),
+                          height=860, scrolling=True)
 
 
 def _tab_products(mtime: float) -> None:
@@ -288,22 +339,25 @@ def _tab_products(mtime: float) -> None:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        bucket = st.selectbox("Bucket", ["all", "508h", "private"], index=0)
+        bucket = st.selectbox("Bucket", ["all", "508h", "private"], index=0,
+                              key="rc_prod_bucket")
         subsidy = st.selectbox(
             "Subsidy", ["all", "subsidized", "private"], index=0,
             help="Derived: subsidized = bucket is not 'private'.",
+            key="rc_prod_subsidy",
         )
     with c2:
         aip_opts = sorted(df["AIP"].dropna().unique().tolist())
-        aips = st.multiselect("AIP", aip_opts)
+        aips = st.multiselect("AIP", aip_opts, key="rc_prod_aips")
         crop_opts = sorted({c for cl in df["_crops_list"] for c in cl})
-        crops = st.multiselect("Crop", crop_opts)
+        crops = st.multiselect("Crop", crop_opts, key="rc_prod_crops")
     with c3:
         peril_opts = ["all"] + sorted(df["peril_type"].dropna().unique().tolist())
-        peril = st.selectbox("Peril type", peril_opts, index=0)
+        peril = st.selectbox("Peril type", peril_opts, index=0, key="rc_prod_peril")
         cov_opts = ["all"] + sorted(df["coverage_type"].dropna().unique().tolist())
-        coverage = st.selectbox("Coverage type", cov_opts, index=0)
-    search = st.text_input("Search name", placeholder="e.g. hail, ECO, replant…")
+        coverage = st.selectbox("Coverage type", cov_opts, index=0, key="rc_prod_coverage")
+    search = st.text_input("Search name", placeholder="e.g. hail, ECO, replant…",
+                           key="rc_prod_search")
 
     filtered = data.filter_products(
         df,
@@ -335,6 +389,7 @@ def _tab_products(mtime: float) -> None:
         view.to_csv(index=False).encode("utf-8"),
         file_name="aip_products_filtered.csv",
         mime="text/csv",
+        key="rc_prod_csv",
     )
 
 
@@ -415,11 +470,14 @@ def _tab_serff(mtime: float) -> None:
     )
     c1, c2, c3 = st.columns(3)
     with c1:
-        states = st.multiselect("State", sorted(df["state"].dropna().unique().tolist()))
+        states = st.multiselect("State", sorted(df["state"].dropna().unique().tolist()),
+                                key="rc_serff_states")
     with c2:
-        aip_codes = st.multiselect("AIP code", sorted(df["aip_code"].dropna().unique().tolist()))
+        aip_codes = st.multiselect("AIP code", sorted(df["aip_code"].dropna().unique().tolist()),
+                                   key="rc_serff_aips")
     with c3:
-        sub_tois = st.multiselect("Sub-TOI", sorted(df["sub_toi"].dropna().unique().tolist()))
+        sub_tois = st.multiselect("Sub-TOI", sorted(df["sub_toi"].dropna().unique().tolist()),
+                                  key="rc_serff_subtois")
 
     view = df
     if states:
@@ -443,6 +501,7 @@ def _tab_serff(mtime: float) -> None:
         view.to_csv(index=False).encode("utf-8"),
         file_name="serff_filings_filtered.csv",
         mime="text/csv",
+        key="rc_serff_csv",
     )
 
 
@@ -462,6 +521,20 @@ def _tab_about(mtime: float) -> None:
         "by company."
     )
 
+    st.markdown("#### How this app is organized")
+    st.markdown(
+        "The tab bar is **product-first** — one tab per product line:\n\n"
+        "- **Row Crop** — the catalog above, split into sub-tabs: *Map* "
+        "(availability), *Products* (filterable table + CSV), *Stack* "
+        "(coverage-layer analysis), and *SERFF Filings* (the regulatory "
+        "filing history behind the private products).\n"
+        "- **PRF** — Pasture, Rangeland, Forage rainfall index: one map with "
+        "five metric views plus the interval optimizer.\n"
+        "- **LRP** — Livestock Risk Protection savings signal.\n"
+        "- **DRP** — Dairy Revenue Protection (under construction).\n"
+        "- **About** — this page: grain caveats, counts, and the Excel export."
+    )
+
     st.markdown("#### Grain honesty")
     st.markdown(
         "- **Private products are state grain** — statewide SERFF filings; the "
@@ -471,7 +544,7 @@ def _tab_about(mtime: float) -> None:
         "flagged *county detail pending ADM*.\n"
         "- **SERFF filings are filing grain** (regulatory history), not products.\n"
         "- Products with no availability data are never painted — they appear "
-        "only in the map's *unmapped* list."
+        "only in the *unmapped* list on **Row Crop → Map**."
     )
 
     st.markdown("#### Counts")
@@ -487,7 +560,8 @@ def _tab_about(mtime: float) -> None:
     c4.metric("Documents", counts.get("documents", 0))
 
     st.markdown("#### Excel export")
-    st.caption("Full catalog — Products, AIPs, Stack, SERFF Filings, and Coverage sheets.")
+    st.caption("Full row-crop catalog — Products, AIPs, Stack, SERFF Filings, "
+               "and Coverage worksheets.")
     st.download_button(
         "Download full catalog (.xlsx)",
         _xlsx_bytes(mtime),
@@ -523,6 +597,7 @@ def _tab_lrp() -> None:
     deployed behaviour identical. Set here rather than in lrp_signal.py,
     which is vendored verbatim.
     """
+    st.subheader("🐂 LRP Signal")
     os.environ.setdefault("MPLBACKEND", "Agg")
     try:
         import lrp_page
@@ -532,6 +607,31 @@ def _tab_lrp() -> None:
                    "(see requirements.txt).")
         return
     lrp_page.render()
+
+
+# ------------------------------------------------------------------ DRP tab
+def _tab_drp() -> None:
+    """Dairy Revenue Protection — delegates to src/drppage.render().
+
+    The module is optional (see the guarded import at the top of this file):
+    if it is missing, half-written, or raises on import, the tab says so
+    instead of breaking every other tab on the page.
+    """
+    st.subheader("🥛 DRP — Dairy Revenue Protection")
+    if drppage is None:
+        st.info(
+            "The DRP optimizer is not built yet. Once `src/drppage.py` lands, "
+            "this tab renders it automatically — no change needed here."
+        )
+        return
+    render = getattr(drppage, "render", None)
+    if render is None:
+        st.info(
+            "`src/drppage.py` is present but does not expose a `render()` "
+            "function yet — the DRP optimizer is still being built."
+        )
+        return
+    render()
 
 
 # -------------------------------------------------------------------- main
@@ -551,23 +651,23 @@ def main() -> None:
             st.rerun()
 
     mtime = _db_mtime()
-    tabs = st.tabs(["Map", "PRF", "PRF Optimizer", "Products", "Stack",
-                    "SERFF Filings", "🐂 LRP Signal", "About"])
+    # PRODUCT-FIRST tab bar: one top-level tab per product line.
+    #   Row Crop — the catalog itself, with Map / Products / Stack / SERFF
+    #              Filings as sub-tabs (they used to be four sibling tabs).
+    #   PRF      — one tab whose embedded page carries the metric dropdown
+    #              (CBV / win rate / return per $1 / return per acre / commission).
+    #   LRP      — Livestock Risk Protection savings signal.
+    #   DRP      — Dairy Revenue Protection (optional module, see _tab_drp).
+    tabs = st.tabs(["Row Crop", "PRF", "LRP", "DRP", "About"])
     with tabs[0]:
-        _tab_map(mtime)
+        _tab_row_crop(mtime)
     with tabs[1]:
         _tab_prf(mtime)
     with tabs[2]:
-        _tab_prf_opt(mtime)
-    with tabs[3]:
-        _tab_products(mtime)
-    with tabs[4]:
-        _tab_stack(mtime)
-    with tabs[5]:
-        _tab_serff(mtime)
-    with tabs[6]:
         _tab_lrp()
-    with tabs[7]:
+    with tabs[3]:
+        _tab_drp()
+    with tabs[4]:
         _tab_about(mtime)
 
 

@@ -1,0 +1,41 @@
+# aip_commission.csv — YOUR agency's commission rate, per AIP AND per region.
+#
+# *** THE VALUES SHIPPED HERE ARE SAMPLE DATA, NOT A REAL RATE CARD. ***
+# Replace them with your negotiated rates. Commission is negotiated between the AIP and the
+# agency and is published nowhere — not in ADM, not in SERFF — so it cannot be derived and
+# must be entered by hand.
+#
+# SHAPE: one row per AIP, one COLUMN per region. Rates differ by region within a single AIP
+# AND differ between AIPs, and the same rate recurs across several AIPs — a single number per
+# AIP cannot express that, and it would also make the commission map an exact rescale of the
+# premium map (identical shape, different axis). To add a region, add a column; to stop
+# writing an AIP, blank its row.
+#
+# Every value is a PERCENT OF TOTAL PREMIUM (the subsidised portion included, which is how
+# agent compensation is normally computed): enter 12.5 for 12.5%.
+#
+# RESOLUTION, per county (see prfpage.commission_pct_for):
+#   1. this AIP's rate for the county's region
+#   2. else the region default in data/seed/commission_by_timezone.csv
+#   3. else no rate — the county renders "no rate set", NEVER 0. "Unknown" and "zero
+#      commission" are different claims and only one may be multiplied into a dollar figure.
+#
+# Region is assigned by STATE, using each state's predominant time zone; thirteen states
+# straddle a boundary and take their majority zone. See commission_by_timezone.csv.
+#
+# NOTE the 80%-of-A&O cap on total agent compensation in the SRA, and RMA's
+# schemes-or-devices rules, both of which constrain what an AIP may pay — they bound the
+# rates you enter here, they are not modelled by the tool.
+aip_code,aip_name,Pacific,Mountain,Central,Eastern,notes
+RH,ACE American Insurance Company (Rain and Hail),20,18,16,14,sample
+WN,American Agri-Business Insurance Company (AgriSompo),19,17,15,13,sample
+FA,American Agricultural Insurance Company (AFBIS),20,18,16,14,sample
+CP,Clear Blue Insurance Company (Precision Risk Mgmt),19,17,15,13,sample
+CM,Country Mutual Insurance Company (COUNTRY Financial),20,18,16,14,sample
+FH,Farmers Mutual Hail Insurance Company of Iowa,19,17,15,13,sample
+GA,Great American Insurance Company,20,18,16,14,sample
+HU,Hudson Insurance Company,19,17,15,13,sample
+NA,NAU Country Insurance Company,20,18,16,14,sample
+PS,Palomar Specialty Insurance Company,19,17,15,13,sample
+PL,Producers Agriculture Insurance Company (ProAg),20,18,16,14,sample
+EF,Rural Community Insurance Company (RCIS),19,17,15,13,sample

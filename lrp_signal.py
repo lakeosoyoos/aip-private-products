@@ -20,7 +20,7 @@ Timing:
   ~2:00 PM CT   CME cattle options settle
   ~3:30 PM CT   RMA posts new LRP prices
   ~4:00 PM CT   Run this script — decision: buy tonight or pass
-  9:00 AM CT    Window closes, prices expire
+  8:25 AM CT    Window closes, prices expire
   → ~17-hour window to act. LRP suspended on Cattle on Feed report days.
 
 Usage:
@@ -66,10 +66,20 @@ GAP_HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "lrp_gap_history.csv")
 
 TENORS_WEEKS    = [13, 17, 21, 26, 30, 34, 39, 43, 47, 52]
-COVERAGE_LEVELS = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00]
+# The twelve levels RMA actually publishes in the daily livestock rate file. Verified
+# against lrp_cache/lrp_feeder_2026-07-15.csv, whose distinct coverage_level values are
+# exactly this list. 0.70 is NOT offered (LRP's floor is 70% of expected ending value only
+# in the sense that 0.75 is the lowest published level), and the fine levels 0.875, 0.925
+# and 0.96-0.99 exist but were previously absent, so those cells were never priced.
+COVERAGE_LEVELS = [0.75, 0.80, 0.85, 0.875, 0.90, 0.925, 0.95, 0.96, 0.97, 0.98, 0.99, 1.00]
 
-SUBSIDY_SCHEDULE = {1.00: 0.35, 0.95: 0.40, 0.90: 0.45,
-                    0.85: 0.50, 0.80: 0.55, 0.00: 0.55}
+# RMA Livestock Rate/Subsidy table: 95.00-100% -> 35%, 90.00-94.99% -> 40%,
+# 85.00-89.99% -> 45%, 80.00-84.99% -> 50%, 70.00-79.99% -> 55%.
+# Keys are the INCLUSIVE LOWER bound of each band (get_subsidy_rate walks them descending).
+# The previous table was shifted one band high (it paid 0.95 a 40% subsidy and 0.80 a 55%),
+# which understated producer premium at every level from 80% to 99%.
+SUBSIDY_SCHEDULE = {0.95: 0.35, 0.90: 0.40, 0.85: 0.45,
+                    0.80: 0.50, 0.00: 0.55}
 
 CME_MONTH_CODES   = {1:"F",2:"G",3:"H",4:"J",5:"K",6:"M",
                      7:"N",8:"Q",9:"U",10:"V",11:"X",12:"Z"}
@@ -166,7 +176,7 @@ def fetch_lrp_current(commodity, use_cache=True):
     The rates a producer can act on RIGHT NOW, as (df, sales_date).
 
     RMA posts the sales-effective-date-D file ~3:30 PM CT on day D and it
-    is purchasable until 9:00 AM CT on D+1. So before 9 AM CT the operative
+    is purchasable until 8:25 AM CT on D+1. So before 8:25 AM CT the operative
     file is YESTERDAY'S; today's appears mid-afternoon. Between 9 AM and
     ~3:30 PM there are genuinely no live rates (df comes back empty).
     """
@@ -179,7 +189,8 @@ def fetch_lrp_current(commodity, use_cache=True):
         now_ct = datetime.now(ZoneInfo("America/Chicago"))
     except Exception:
         now_ct = datetime.now()
-    if now_ct.hour < 9:
+    # Before the 8:25 AM CT close the live quotes are still YESTERDAY's posting.
+    if now_ct.hour * 60 + now_ct.minute < 505:
         yday = today - timedelta(days=1)
         df = fetch_lrp(commodity, yday, use_cache=use_cache)
         if not df.empty:
@@ -292,9 +303,16 @@ def _parse_rate_file(text, commodity):
             if key in seen:
                 continue
             seen.add(key)
+            # cost_per_cwt_amount is the TOTAL (actuarial) premium per cwt -- RMA's own
+            # worked example runs $56,250 insured value x .013990 rate = $787 total, from
+            # which a 35% subsidy of $275 leaves the producer $512. Treating cost_cwt as
+            # the producer's share (as this parser used to) overstated what the producer
+            # actually pays by 1/(1-subsidy). livestock_rate x coverage_price reproduces
+            # cost_cwt to rounding, so cost_cwt is used directly as the authoritative value.
             rows.append({"weeks": weeks, "coverage_level": cov_level,
-                         "coverage_price": cov_price, "producer_prem": cost_cwt,
-                         "actuarial_prem": rate * cov_price,
+                         "coverage_price": cov_price,
+                         "actuarial_prem": cost_cwt,
+                         "producer_prem": cost_cwt * (1 - get_subsidy_rate(cov_level)),
                          "expected_value": expected})
         except (ValueError, TypeError, KeyError):
             continue
@@ -574,8 +592,11 @@ def build_grid(lrp_df, futures_curve, r, base_vol, asof=None):
 
             # ── LRP side: use actual RMA data ──
             if not lrp_df.empty:
+                # Exact-level match. RMA publishes levels as close together as 0.01 apart
+                # (0.95/0.96/0.97/0.98/0.99), so the old +/-0.025 window straddled up to
+                # five of them and iloc[0] silently priced whichever sorted first.
                 mask = ((lrp_df["weeks"] == weeks) &
-                        (lrp_df["coverage_level"].between(cov - 0.025, cov + 0.025)))
+                        ((lrp_df["coverage_level"] - cov).abs() < 0.0025))
                 matched = lrp_df[mask]
             else:
                 matched = pd.DataFrame()
@@ -583,9 +604,12 @@ def build_grid(lrp_df, futures_curve, r, base_vol, asof=None):
             if not matched.empty:
                 prod_prem = float(matched.iloc[0]["producer_prem"])
                 cov_price = float(matched.iloc[0]["coverage_price"])
-                # RMA's livestock_rate is the subsidized rate, not actuarial.
-                # Back out the true actuarial premium from the subsidy schedule.
-                act_prem = prod_prem / (1 - subsidy_rate) if subsidy_rate < 1 else prod_prem
+                # Both premiums come straight from RMA now: actuarial_prem is the published
+                # cost_per_cwt_amount and producer_prem is that net of subsidy. The old
+                # code grossed prod_prem UP by 1/(1-subsidy) on the belief that RMA's
+                # published figure was already net -- it is not, so that compounded the
+                # error rather than correcting it.
+                act_prem = float(matched.iloc[0]["actuarial_prem"])
                 live = True
             else:
                 # Estimate: use RMA expected value × coverage as strike
@@ -846,9 +870,33 @@ def ensure_gap_history(commodity, lookback, r, base_vol, verbose=True):
     return days_ok
 
 
+MIN_RICHNESS_BUY = 1.25
+"""Richness a cell must reach before BUY is allowed.
+
+This was hardcoded at 3.0, which is UNREACHABLE. Backtested over the corrected gap
+history (1,533 evaluable cell-days, 2026-06-22..2026-08-06) the highest richness any
+cell ever attained was 2.1, and the 3.0 gate fired exactly zero times — the signal
+could never fire regardless of how good the opportunity was.
+
+The gate is unreachable because richness is a RATIO of today's gap to that cell's own
+baseline, and correcting the producer-premium bug ADDS the subsidy to both sides rather
+than scaling them, which compresses every ratio toward 1.0 (median richness moved
+0.77 -> 0.90). A multiple that made sense against small contaminated gaps cannot survive
+against correctly-sized ones.
+
+Calibration at min_buy_delta=0.25, share of evaluable cell-days firing:
+    1.15 -> 9.7%   1.25 -> 4.3%   1.35 -> 2.5%   1.50 -> 1.1%   2.00 -> 0.1%
+1.25 is chosen to make BUY occasional (5 of 26 days) rather than never.
+
+CAVEAT: 26 evaluable days is a thin base. Re-run scripts/rebuild_gap_history.py's
+backtest once a full season has accumulated and re-tune.
+"""
+
+
 def add_history_from_snapshots(grid, commodity, lookback, today_date=None,
                                min_days=5, low_base_floor=0.10,
-                               min_buy_delta=0.25):
+                               min_buy_delta=0.25,
+                               min_richness=MIN_RICHNESS_BUY):
     """
     Richness from RECORDED snapshots only — history is never re-priced, so
     market moves between then and now cannot distort the baseline.
@@ -894,7 +942,7 @@ def add_history_from_snapshots(grid, commodity, lookback, today_date=None,
         if float(a["avg_gap"]) >= low_base_floor and abs(a["avg_pct"]) > 0.001:
             rx = round(float(row["gap_pct"]) / float(a["avg_pct"]), 1)
         richness.append(rx)
-        buy_ok.append(bool(rx is not None and rx >= 3
+        buy_ok.append(bool(rx is not None and rx >= min_richness
                            and (row["gap"] - float(a["avg_gap"]))
                            >= min_buy_delta))
 
@@ -928,11 +976,13 @@ def check_window():
     dow = ct.weekday()
     hm = ct.hour * 60 + ct.minute
     print(f"  {ct.strftime('%A %Y-%m-%d %I:%M %p')} CT")
+    # LRP sales close at 8:25 AM CT (= 505 min past midnight), not 9:00. Endorsements may
+    # be written from RMA's ~3:30 PM CT posting through 8:25 the next morning.
     if hm >= 930:
-        left = (24 * 60 - hm) + 540
+        left = (24 * 60 - hm) + 505
         print(f"  LRP window: {BG}OPEN{RS} — {left // 60}h {left % 60}m to close")
-    elif hm < 540:
-        left = 540 - hm
+    elif hm < 505:
+        left = 505 - hm
         print(f"  LRP window: {BG}OPEN{RS} — {left // 60}h {left % 60}m to close")
     else:
         print(f"  LRP window: {GR}CLOSED{RS} — opens ~3:30 PM CT")
@@ -1000,12 +1050,11 @@ def print_signal(grid, commodity, spot, cme_source, head, futures_curve):
             gap = row["gap"]
             gap_pct = row["gap_pct"]
 
-            # Color the richness (bright green only for gated BUYs)
-            if rx is not None and rx >= 3 and row.get("buy_ok", False):
+            # Color the richness (bright green only for gated BUYs). buy_ok already
+            # encodes the richness gate, so don't re-test a second hardcoded multiple.
+            if rx is not None and row.get("buy_ok", False):
                 tag = f"{BG}{rx:>4.1f}x BUY{RS}"
-            elif rx is not None and rx >= 3:
-                tag = f"{G}{rx:>4.1f}x{RS}"
-            elif rx is not None and rx >= 1.5:
+            elif rx is not None and rx >= MIN_RICHNESS_BUY:
                 tag = f"{G}{rx:>4.1f}x{RS}"
             elif rx is not None and rx < 0.8:
                 tag = f"{Y}{rx:>4.1f}x{RS}"
@@ -1166,9 +1215,9 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
                 ok = (p_buy is not None and pd.notna(p_buy.loc[ri, ci])
                       and bool(p_buy.loc[ri, ci]))
                 if pd.notna(v):
-                    if v >= 3 and ok:
+                    if ok:
                         annot_rich.loc[ri, ci] = f"{v:.1f}x\nBUY"
-                    elif v >= 1.5:
+                    elif v >= MIN_RICHNESS_BUY:
                         annot_rich.loc[ri, ci] = f"{v:.1f}x"
                     elif v < 0.8:
                         annot_rich.loc[ri, ci] = f"{v:.1f}x\nwait"
@@ -1176,12 +1225,14 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
                         annot_rich.loc[ri, ci] = f"{v:.1f}x"
                 else:
                     annot_rich.loc[ri, ci] = ""
+        # vmax was 5, but observed richness tops out near 2.1 once producer premium is
+        # correct — a 0..5 scale pinned every real cell into the same washed-out band.
         sns.heatmap(p_rich, ax=axes[1, 1], cmap="RdYlGn", center=1.0,
-                    vmin=0, vmax=5, annot=annot_rich, fmt="",
+                    vmin=0, vmax=2.5, annot=annot_rich, fmt="",
                     cbar_kws={**cbar_kw, "label": "x normal"}, **hm_kw)
         axes[1, 1].set_title("Today vs Recorded Avg (x multiple)\n"
-                             "BUY needs ≥3x AND +$0.25/cwt vs normal; blank "
-                             "= baseline too small to trust", fontsize=10)
+                             f"BUY needs ≥{MIN_RICHNESS_BUY:g}x AND +$0.25/cwt vs normal; "
+                             "blank = baseline too small to trust", fontsize=10)
         axes[1, 1].set_xlabel("Tenor (weeks)")
         axes[1, 1].set_ylabel("")
         axes[1, 1].set_xticklabels(tick_labels, fontsize=9)

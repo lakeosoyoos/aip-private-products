@@ -225,12 +225,29 @@ _TEMPLATE = r"""<!DOCTYPE html>
     border: 1px solid var(--baseline); border-radius: 6px; background: var(--surface);
     color: var(--ink);
   }
-  #backBtn {
-    font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 6px;
-    border: 1px solid var(--baseline); background: var(--surface); color: var(--ink);
-    cursor: pointer; display: none;
+  /* ---- drill-down chrome: breadcrumb + zoom control (matches the PRF map) ---- */
+  #crumb {
+    position: absolute; top: 12px; left: 16px; z-index: 4; display: flex; align-items: center;
+    gap: 6px; background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
+    padding: 5px 9px; font-size: 12px; box-shadow: 0 1px 4px rgba(11,11,11,0.06);
   }
-  #backBtn:hover { background: var(--zero); }
+  #crumb .c-step { color: var(--accent); cursor: pointer; }
+  #crumb .c-step:hover { text-decoration: underline; }
+  #crumb .c-here { color: var(--ink); font-weight: 600; }
+  #crumb .c-sep { color: var(--muted); }
+  #crumb .c-hint { color: var(--muted); border-left: 1px solid var(--grid); padding-left: 8px; }
+  #zoomBox {
+    position: absolute; right: 16px; bottom: 14px; z-index: 4; display: flex; flex-direction: column;
+    align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--ring);
+    border-radius: 8px; padding: 9px 7px; box-shadow: 0 1px 4px rgba(11,11,11,0.06);
+  }
+  #zoomBox button {
+    font: inherit; font-size: 15px; line-height: 1; width: 24px; height: 22px; cursor: pointer;
+    border: 1px solid var(--baseline); border-radius: 5px; background: var(--surface); color: var(--ink);
+  }
+  #zoomBox button:hover { border-color: var(--accent); color: var(--accent); }
+  #zSlider { writing-mode: vertical-lr; direction: rtl; width: 22px; height: 104px; accent-color: var(--accent); }
+  #zLabel { font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
   #main { flex: 1; display: flex; min-height: 0; }
   #mapWrap { flex: 1; position: relative; min-width: 0; }
   #map { width: 100%; height: 100%; display: block; }
@@ -298,7 +315,8 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <header>
   <h1>Crop-insurance product availability</h1>
   <div class="sub">Shading = number of matching products available in each state / county.
-  Click a state to zoom to counties; click the background or Back to zoom out. Generated __GENERATED__.</div>
+  Click a state to zoom to counties; click the background or the breadcrumb to zoom out.
+  Scroll, drag, or use the zoom control to move around. Generated __GENERATED__.</div>
 </header>
 <div class="filters">
   <label>Crop <select id="fCrop"><option value="">All crops</option></select></label>
@@ -308,13 +326,19 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <option value="sub">Subsidized federal</option>
     <option value="unsub">Unsubsidized private</option>
   </select></label>
-  <button id="backBtn">&#8592; Back to US</button>
   <span id="countLine" style="color:var(--muted);font-size:12px;margin-left:auto"></span>
 </div>
 <div id="main">
   <div id="mapWrap">
     <div id="pendingNote"></div>
+    <div id="crumb"></div>
     <svg id="map" viewBox="0 0 975 610" preserveAspectRatio="xMidYMid meet"></svg>
+    <div id="zoomBox">
+      <button id="zIn" type="button" title="Zoom in">+</button>
+      <input type="range" id="zSlider" min="0" max="100" value="0">
+      <button id="zOut" type="button" title="Zoom out">&minus;</button>
+      <span id="zLabel">1&times;</span>
+    </div>
     <div id="legend"></div>
     <div id="tooltip"></div>
   </div>
@@ -432,6 +456,82 @@ var DATA = __PAYLOAD__;
   var gStates = g.append("g"), gCounties = g.append("g");
   var outline = g.append("path").attr("id", "stateOutline");
 
+  // ---------------- zoom
+  // The transform used to be written straight onto `g`, which meant there was no wheel or
+  // drag panning and nothing a slider could bind to. Routing every change through a real
+  // d3.zoom gives one source of truth that the buttons, the slider and the drill-down all
+  // share. Ceiling is 12x: this map's finest grain is the county, so magnifying past the
+  // point where county lines are legible would show nothing further.
+  var K_MIN = 1, K_MAX = 12, curK = 1;
+  var zoom = d3.zoom().scaleExtent([K_MIN, K_MAX]).on("zoom", function (ev) {
+    g.attr("transform", ev.transform);
+    curK = ev.transform.k;
+    syncZoomUI();
+  });
+  svg.call(zoom).on("dblclick.zoom", null);
+
+  // Animate, EXCEPT in a hidden tab. d3's transition scheduler is driven by
+  // requestAnimationFrame, which browsers suspend while a tab is backgrounded, so an
+  // animated zoom started there never advances past its CREATED state — the map stays
+  // frozen at whatever zoom it had, and stays frozen after you switch back. Applying the
+  // transform directly when document.hidden keeps the map correct either way.
+  function applyTransform(t, dur) {
+    if (dur === 0 || document.hidden) svg.call(zoom.transform, t);
+    else svg.transition().duration(dur).call(zoom.transform, t);
+  }
+  function zoomToFeature(d, dur) {
+    var b = path.bounds(d),
+        dx = b[1][0] - b[0][0], dy = b[1][1] - b[0][1],
+        x = (b[0][0] + b[1][0]) / 2, y = (b[0][1] + b[1][1]) / 2,
+        k = Math.max(K_MIN, Math.min(K_MAX, 0.9 / Math.max(dx / 975, dy / 610)));
+    applyTransform(d3.zoomIdentity.translate(975 / 2 - k * x, 610 / 2 - k * y).scale(k),
+                   dur === undefined ? 700 : dur);
+  }
+  function resetZoom(dur) {
+    applyTransform(d3.zoomIdentity, dur === undefined ? 600 : dur);
+  }
+
+  var zSlider = document.getElementById("zSlider"), zLabel = document.getElementById("zLabel");
+  // Logarithmic so each step of the thumb is the same PROPORTIONAL change.
+  function kToSlider(k) { return 100 * Math.log(k / K_MIN) / Math.log(K_MAX / K_MIN); }
+  function sliderToK(v) { return K_MIN * Math.pow(K_MAX / K_MIN, v / 100); }
+  function syncZoomUI() {
+    zSlider.value = String(kToSlider(curK));
+    zLabel.innerHTML = (curK < 10 ? curK.toFixed(1) : Math.round(curK)) + "&times;";
+  }
+  function zoomToK(k) {
+    var kk = Math.max(K_MIN, Math.min(K_MAX, k));
+    if (document.hidden) svg.call(zoom.scaleTo, kk);
+    else svg.transition().duration(120).call(zoom.scaleTo, kk);
+  }
+  zSlider.addEventListener("input", function () { zoomToK(sliderToK(+zSlider.value)); });
+  document.getElementById("zIn").addEventListener("click", function (ev) {
+    ev.stopPropagation(); zoomToK(curK * 1.6);
+  });
+  document.getElementById("zOut").addEventListener("click", function (ev) {
+    ev.stopPropagation(); zoomToK(curK / 1.6);
+  });
+
+  // ---------------- breadcrumb
+  var crumb = document.getElementById("crumb");
+  function updateCrumb() {
+    var h = '<span class="' + (currentState ? "c-step" : "c-here") + '" data-lv="0">United States</span>';
+    if (currentState) {
+      h += '<span class="c-sep">&rsaquo;</span><span class="c-here">' +
+           esc(currentState.name) + '</span>';
+    }
+    // No third level: product availability is published per COUNTY and there is nothing
+    // finer to drill into. (The PRF map has a grid level because RMA prices a 0.25-degree
+    // rainfall lattice; product availability has no such grain.)
+    h += '<span class="c-hint">' +
+         (currentState ? "county grain &middot; click away to go back"
+                       : "click a state to zoom") + '</span>';
+    crumb.innerHTML = h;
+    crumb.querySelectorAll(".c-step").forEach(function (el) {
+      el.addEventListener("click", function (ev) { ev.stopPropagation(); zoomOut(); });
+    });
+  }
+
   var stateSel = gStates.selectAll("path").data(statesFC).join("path")
       .attr("class", "state").attr("d", path)
       .on("click", function (ev, d) { ev.stopPropagation(); zoomToState(d); })
@@ -485,14 +585,8 @@ var DATA = __PAYLOAD__;
     outline.attr("d", path(d));
     stateSel.classed("dimmed", function (s) { return s.id !== d.id; })
             .style("display", function (s) { return s.id === d.id ? "none" : null; });
-    var b = path.bounds(d),
-        dx = b[1][0] - b[0][0], dy = b[1][1] - b[0][1],
-        x = (b[0][0] + b[1][0]) / 2, y = (b[0][1] + b[1][1]) / 2,
-        k = Math.max(1, Math.min(12, 0.9 / Math.max(dx / 975, dy / 610))),
-        tx = 975 / 2 - k * x, ty = 610 / 2 - k * y;
-    g.transition().duration(700)
-     .attr("transform", "translate(" + tx + "," + ty + ") scale(" + k + ")");
-    document.getElementById("backBtn").style.display = "inline-block";
+    zoomToFeature(d);
+    updateCrumb();
     refresh();
   }
 
@@ -502,11 +596,10 @@ var DATA = __PAYLOAD__;
     gCounties.selectAll("path").remove();
     outline.attr("d", null);
     stateSel.classed("dimmed", false).style("display", null);
-    g.transition().duration(600).attr("transform", "translate(0,0) scale(1)");
-    document.getElementById("backBtn").style.display = "none";
+    resetZoom();
+    updateCrumb();
     refresh();
   }
-  document.getElementById("backBtn").addEventListener("click", zoomOut);
 
   // ---------------- hover / tooltip
   var tip = document.getElementById("tooltip");
@@ -686,6 +779,8 @@ var DATA = __PAYLOAD__;
 
   [fCrop, fAip, fSub].forEach(function (el) { el.addEventListener("change", refresh); });
   refresh();
+  updateCrumb();
+  syncZoomUI();
 })();
 </script>
 </body>

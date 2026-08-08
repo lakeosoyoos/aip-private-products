@@ -23,6 +23,7 @@ from .connectors.aip_sites.base import AipSites
 from .connectors.base import Context
 from .connectors.deepen_seed import DeepenSeed
 from .connectors.manual_seed import ManualSeed
+from .connectors.nass_yield import NassYield
 from .connectors.prf_adm import PrfAdm
 from .connectors.rma_adm import RmaAdm
 from .connectors.rma_aip_listing import RmaAipListing
@@ -37,6 +38,7 @@ REGISTRY = {
     "rma_adm": RmaAdm,
     "prf_adm": PrfAdm,
     "rma_sob": RmaSob,
+    "nass_yield": NassYield,
     "serff": Serff,
     "aip_sites": AipSites,
     "manual_seed": ManualSeed,

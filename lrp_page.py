@@ -35,7 +35,7 @@ def _run_pipeline(commodity, vol_pct, rate_pct, lookback, _cache_day):
     r = rate_pct / 100.0
     base_vol = vol_pct / 100.0
     curve = fetch_cme_futures_curve(commodity)
-    # Overnight window (before 9 AM CT) serves yesterday's still-live rates
+    # Overnight window (before 8:25 AM CT) serves yesterday's still-live rates
     lrp, eff_date = fetch_lrp_current(commodity)
     status = "live"
     if lrp.empty:
@@ -64,18 +64,19 @@ def _run_pipeline(commodity, vol_pct, rate_pct, lookback, _cache_day):
 
 
 def _window_status():
-    """LRP sales window: opens ~3:30 PM CT, closes 9:00 AM CT next day."""
+    """LRP sales window: opens ~3:30 PM CT, closes 8:25 AM CT next day."""
     try:
         from zoneinfo import ZoneInfo
     except ImportError:
         from backports.zoneinfo import ZoneInfo
     ct = datetime.now(ZoneInfo("America/Chicago"))
     hm = ct.hour * 60 + ct.minute
+    # 8:25 AM CT close (505 min past midnight) — see lrp_signal.check_window.
     if hm >= 930:
-        left = (24 * 60 - hm) + 540
+        left = (24 * 60 - hm) + 505
         return True, f"open — {left // 60}h {left % 60}m to close"
-    if hm < 540:
-        left = 540 - hm
+    if hm < 505:
+        left = 505 - hm
         return True, f"open — {left // 60}h {left % 60}m to close"
     return False, "closed — opens ~3:30 PM CT"
 
@@ -129,13 +130,13 @@ def render():
     elif status == "expired":
         st.warning(f"**EXPIRED — FOR REFERENCE ONLY.** These are the last "
                    f"posted rates (effective **{eff_date}**); their sales "
-                   f"window closed at 9:00 AM CT and they are no longer "
+                   f"window closed at 8:25 AM CT and they are no longer "
                    f"purchasable. New rates post ~3:30 PM CT on the next "
                    f"sales day. The CME comparison uses today's curve, so "
                    f"the gap will shift when fresh rates arrive.")
     elif eff_date != sales_today():
         st.info(f"Overnight window — showing rates effective "
-                f"**{eff_date}**, purchasable until 9:00 AM CT this "
+                f"**{eff_date}**, purchasable until 8:25 AM CT this "
                 f"morning.")
 
     # ── Headline metrics ─────────────────────────────────────────────────

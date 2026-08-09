@@ -82,11 +82,15 @@ def _product_rows(conn) -> list[dict]:
     return out
 
 
-def _sob_market_rows(conn) -> list[dict]:
-    """Roll sob_sales up to one row per FEDERAL product (market reality per plan family).
+def _sob_market_rows(conn, table: str = "sob_sales") -> list[dict]:
+    """Roll Summary of Business up to one row per FEDERAL product (market per plan family).
 
-    Maps each sob_sales plan_code back to its catalog product via the same plan map the connectors
-    use; sums liability/premium/acres/indemnity/policies and counts distinct states and rows.
+    Maps each plan_code back to its catalog product via the same plan map the connectors use;
+    sums liability/premium/acres/indemnity/policies and counts distinct states and rows.
+
+    `table` is "sob_sales" (county detail, local working DB) or "sob_national" (the rollup that
+    actually ships). The rollup has no `state` column — it is national by construction — so the
+    states count comes back empty there rather than being faked from an aggregate.
     """
     prods = [dict(r) for r in conn.execute(
         "SELECT product_id, name, plan_code FROM products WHERE bucket != 'private'")]
@@ -98,7 +102,7 @@ def _sob_market_rows(conn) -> list[dict]:
             pid_plans.setdefault(p["product_id"], set()).add(c)
 
     acc: dict[int, dict] = {}
-    for r in conn.execute("SELECT * FROM sob_sales"):
+    for r in conn.execute(f"SELECT * FROM {table}"):
         pid = plan_to_pid.get(r["plan_code"])
         if pid is None:
             continue
@@ -107,7 +111,8 @@ def _sob_market_rows(conn) -> list[dict]:
             "net_acres": 0.0, "liability": 0.0, "total_premium": 0.0,
             "subsidy": 0.0, "indemnity": 0.0, "policies_sold": 0})
         d["rows"] += 1
-        d["states"].add(r["state"])
+        if "state" in r.keys():
+            d["states"].add(r["state"])
         d["crops"].add(r["crop"])
         d["years"].add(r["year"])
         for k in ("net_acres", "liability", "total_premium", "subsidy", "indemnity"):
@@ -151,9 +156,19 @@ def build_workbook(conn, out_path: Path | str | None = None,
 
     stack.build_sheet(wb.create_sheet("Stack"), conn)
 
-    n_sob = conn.execute("SELECT COUNT(*) FROM sob_sales").fetchone()[0]
-    if n_sob:
+    # Summary of Business source, in preference order. sob_sales is the county detail and is
+    # DROPPED from the shipped app DB (3.23M rows / ~400 MB — see scripts/build_app_db.py), so
+    # on the deployed app only the national rollup exists. Reading sob_sales unconditionally
+    # crashed the whole app there, not just this sheet, because the workbook builds eagerly.
+    _tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
+    if "sob_sales" in _tables and conn.execute(
+            "SELECT COUNT(*) FROM sob_sales").fetchone()[0]:
         _write_sheet(wb.create_sheet("Market (SoB)"), MARKET_COLUMNS, _sob_market_rows(conn))
+    elif "sob_national" in _tables and conn.execute(
+            "SELECT COUNT(*) FROM sob_national").fetchone()[0]:
+        _write_sheet(wb.create_sheet("Market (SoB)"), MARKET_COLUMNS,
+                     _sob_market_rows(conn, table="sob_national"))
 
     n_filings = conn.execute("SELECT COUNT(*) FROM serff_filings").fetchone()[0]
     if n_filings:

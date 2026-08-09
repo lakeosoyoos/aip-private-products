@@ -17,17 +17,30 @@ from ..stack import classified_products
 
 
 def open_ro(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Open the catalog strictly read-only (immutable) via a sqlite URI.
+    """Open the catalog strictly read-only via a sqlite URI.
 
     check_same_thread=False is required because the app caches this one connection with
     @st.cache_resource and Streamlit executes reruns (and different sessions) on different
     threads — the default check_same_thread=True raises sqlite3.ProgrammingError when the cached
-    connection is used from another thread. Safe here: the DB is opened read-only + immutable, and
-    SQLite's default serialized threading mode allows concurrent reads on one connection.
+    connection is used from another thread. Safe here: the DB is opened read-only, and SQLite's
+    default serialized threading mode allows concurrent reads on one connection.
+
+    `immutable=1` is applied ONLY when the database has no WAL sidecar. It promises SQLite the
+    file cannot change, which lets it skip all locking — a real win for the SHIPPED catalog
+    (scripts/build_app_db.py writes it in DELETE journal mode, one self-contained file, never
+    written again). But it also makes SQLite ignore the -wal file entirely, and on a WAL-mode
+    database that is not a consistent view: opening the 4 GB working catalog this way raises
+    "disk I/O error" outright. Same family as the "database disk image is malformed" this repo
+    hit when the app DB was built with a plain file copy of a WAL database.
+
+    Presence of a sidecar is the test, rather than querying PRAGMA journal_mode — the query
+    would itself need a connection, which is the thing that fails.
     """
     dbp = Path(db_path or config.DB_PATH)
-    conn = sqlite3.connect(
-        f"file:{dbp}?mode=ro&immutable=1", uri=True, check_same_thread=False)
+    has_wal = dbp.with_name(dbp.name + "-wal").exists() or \
+        dbp.with_name(dbp.name + "-shm").exists()
+    uri = f"file:{dbp}?mode=ro" + ("" if has_wal else "&immutable=1")
+    conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 

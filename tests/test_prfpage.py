@@ -1,0 +1,859 @@
+"""Tests for the merged PRF page (src/prfpage.py).
+
+Replaces tests/test_prfmap.py + tests/test_prfoptmap.py, which covered the two
+payload builders when PRF was two separate tabs. Every case they asserted is
+carried over (re-keyed onto the shared use axis where the shape changed), plus
+the new merge behaviour: the use mapping, the composed payload, and the
+per-acre metric's inputs.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+
+import pytest
+from pathlib import Path
+
+from src import db
+from src.prfpage import (
+    _cov_key, _fips5, _parse_list, build_cbv_payload, build_opt_payload,
+    build_prf_page_payload, load_aip_commission, render_prf_page_html, use_key,
+)
+
+
+def grids_of(payload: dict, cell: dict) -> list[dict]:
+    """Resolve a county cell's grid references back to full detail dicts.
+
+    build_opt_payload stores each grid's detail ONCE in payload["grid_detail"]
+    and references it by index (a grid serves ~2.3 counties, so inlining
+    duplicated the whole sweep). This is what the page's JS does to build a
+    tooltip; tests read through it so they assert what the user actually sees.
+    """
+    return [payload["grid_detail"][i] for i in cell["g"]]
+
+
+def policy_of(payload: dict, ix: int):
+    """[interval codes, % allocations] for an interned policy index (-1 -> None)."""
+    return None if ix is None or ix < 0 else payload["policies"][ix]
+
+
+def _cbv(conn, **kw):
+    cols = ("year", "state", "county_fips", "county_name", "intended_use",
+            "irrigation_practice", "organic_practice", "county_base_value", "source")
+    conn.execute(
+        "INSERT INTO prf_county (year, state, county_fips, county_name, intended_use, "
+        "irrigation_practice, organic_practice, county_base_value, source) "
+        "VALUES (?,?,?,?,?,?,?,?,?)", tuple(kw.get(c) for c in cols))
+
+
+def _grid_county(conn, grid_id, county_fips, county_name="X", state="WA"):
+    conn.execute(
+        "INSERT INTO prf_grid_county (grid_id, state, county_fips, county_name, source) "
+        "VALUES (?,?,?,?,?)", (grid_id, state, county_fips, county_name, "synthetic"))
+
+
+def _opt(conn, grid_id, use="Grazing", cov=0.9, *, win=None, win_combo=None,
+         win_props=None, win_net=None, net=None, net_combo=None, net_props=None,
+         net_win=None, median_net=None, pct_positive=None,
+         win_rate_sum=None, net_rate_sum=None):
+    conn.execute(
+        "INSERT INTO prf_opt_best (grid_id, intended_use, coverage_level, year_min, "
+        "year_max, n_policies, best_win_rate, best_win_combo, best_win_props, "
+        "best_win_avg_net, best_net, best_net_combo, best_net_props, "
+        "best_net_win_rate, median_net, pct_positive, best_win_rate_sum, "
+        "best_net_rate_sum, top_json, source, fetched_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (grid_id, use, cov, 2006, 2024, 59536, win,
+         json.dumps(win_combo) if isinstance(win_combo, list) else win_combo,
+         json.dumps(win_props) if isinstance(win_props, list) else win_props,
+         win_net, net,
+         json.dumps(net_combo) if isinstance(net_combo, list) else net_combo,
+         json.dumps(net_props) if isinstance(net_props, list) else net_props,
+         net_win, median_net, pct_positive, win_rate_sum, net_rate_sum,
+         None, "synthetic", "2026-08-05"))
+
+
+def _write_commission(tmp_path, rows, comments=True):
+    """A stand-in data/seed/aip_commission.csv. `rows` are (code, name, pct, notes)."""
+    p = tmp_path / "aip_commission.csv"
+    lines = ["# hand-maintained; commission_pct is a percent of TOTAL premium"] if comments else []
+    lines.append("aip_code,aip_name,commission_pct,notes")
+    lines += [",".join("" if v is None else str(v) for v in r) for r in rows]
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+@pytest.fixture
+def conn():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    db.init_db(conn)
+    yield conn
+    conn.close()
+
+
+# ------------------------------------------------------------------ helpers
+
+def test_use_key_joins_the_two_cbv_dimensions_to_the_optimizer_vocabulary():
+    # The whole merge rests on this: prf_county's (use, practice) pair collapses
+    # onto prf_opt_best's single intended_use value.
+    assert use_key("Grazing", "Non-Irrigated") == "Grazing"
+    assert use_key("Haying", "Non-Irrigated") == "Haying"
+    assert use_key("Haying", "Irrigated") == "Haying-Irrigated"
+    # tolerant of label punctuation/casing variants seen in ADM extracts
+    assert use_key("Haying", "irrigated") == "Haying-Irrigated"
+    assert use_key("Grazing", "Non Irrigated") == "Grazing"
+    assert use_key(" Grazing ", None) == "Grazing"
+    # a combination the map has never seen gets its own key, not silently merged
+    assert use_key("Grazing", "Irrigated") == "Grazing-Irrigated"
+
+
+def test_cov_key_canonical():
+    assert _cov_key(0.9) == "0.9"
+    assert _cov_key("0.90") == "0.9"
+    assert _cov_key(0.85) == "0.85"
+    assert _cov_key(0.7) == "0.7"
+    assert _cov_key(None) == "None"       # never raises
+    assert _cov_key("weird") == "weird"
+
+
+def test_fips5_pads():
+    assert _fips5("9001") == "09001"
+    assert _fips5(53047) == "53047"
+    assert _fips5("") == ""
+    assert _fips5(None) == ""
+
+
+def test_parse_list_json_and_python_repr():
+    assert _parse_list('["JUN-JUL","AUG-SEP"]') == ["JUN-JUL", "AUG-SEP"]
+    assert _parse_list("[50, 50]") == [50, 50]
+    # optimizer's historical export format: Python repr with single quotes
+    assert _parse_list("['JAN-FEB', 'JUN-JUL']") == ["JAN-FEB", "JUN-JUL"]
+    assert _parse_list(None) == []
+    assert _parse_list("") == []
+    assert _parse_list("not a list") == []
+    assert _parse_list([10, 20]) == [10, 20]  # already a list passes through
+
+
+# ------------------------------------------------------------- CBV payload
+
+@pytest.fixture
+def cbv_populated(conn):
+    _cbv(conn, year=2026, state="WA", county_fips="53047", county_name="Okanogan",
+         intended_use="Grazing", irrigation_practice="Non-Irrigated",
+         organic_practice="Conventional", county_base_value=12.50, source="synthetic")
+    _cbv(conn, year=2026, state="WA", county_fips="53047", county_name="Okanogan",
+         intended_use="Haying", irrigation_practice="Irrigated",
+         organic_practice="Conventional", county_base_value=85.00, source="synthetic")
+    _cbv(conn, year=2026, state="WA", county_fips="53047", county_name="Okanogan",
+         intended_use="Haying", irrigation_practice="Non-Irrigated",
+         organic_practice="Conventional", county_base_value=40.00, source="synthetic")
+    _cbv(conn, year=2026, state="MT", county_fips="30001", county_name="Beaverhead",
+         intended_use="Grazing", irrigation_practice="Non-Irrigated",
+         organic_practice="Conventional", county_base_value=7.25, source="synthetic")
+    conn.commit()
+    return conn
+
+
+def test_cbv_empty_db_is_graceful(conn):
+    p = build_cbv_payload(conn)
+    assert p["counties"] == {}
+    assert p["uses"] == [] and p["organics"] == [] and p["years"] == []
+    assert p["min"] is None and p["max"] is None
+    assert p["row_count"] == 0 and p["value_count"] == 0
+
+
+def test_cbv_missing_table_is_graceful():
+    conn = sqlite3.connect(":memory:")  # no schema at all
+    conn.row_factory = sqlite3.Row
+    p = build_cbv_payload(conn)
+    assert p["counties"] == {} and p["min"] is None
+    conn.close()
+
+
+def test_cbv_payload_shape_is_keyed_by_use_key(cbv_populated):
+    p = build_cbv_payload(cbv_populated)
+    # county_fips -> use_key -> organic -> year -> cbv (practice folded into the key)
+    ok = p["counties"]["53047"]
+    assert ok["Grazing"]["Conventional"][2026] == 12.50
+    assert ok["Haying-Irrigated"]["Conventional"][2026] == 85.00
+    assert ok["Haying"]["Conventional"][2026] == 40.00
+    assert p["counties"]["30001"]["Grazing"]["Conventional"][2026] == 7.25
+
+
+def test_cbv_axes_names_and_use_map(cbv_populated):
+    p = build_cbv_payload(cbv_populated)
+    assert p["uses"] == ["Grazing", "Haying", "Haying-Irrigated"]
+    assert p["use_map"]["Haying-Irrigated"] == {
+        "intended_use": "Haying", "irrigation_practice": "Irrigated"}
+    assert p["use_map"]["Grazing"] == {
+        "intended_use": "Grazing", "irrigation_practice": "Non-Irrigated"}
+    assert p["organics"] == ["Conventional"]
+    assert p["years"] == [2026]
+    assert p["county_names"]["53047"] == "Okanogan"
+    assert p["county_names"]["30001"] == "Beaverhead"
+
+
+def test_cbv_min_max_over_values(cbv_populated):
+    p = build_cbv_payload(cbv_populated)
+    assert p["min"] == 7.25 and p["max"] == 85.00
+    assert p["value_count"] == 4
+
+
+def test_cbv_fips_zero_padded(conn):
+    _cbv(conn, year=2026, state="CT", county_fips="9001", county_name="Hartford",
+         intended_use="Grazing", irrigation_practice="Non-Irrigated",
+         organic_practice="Conventional", county_base_value=30.0, source="synthetic")
+    conn.commit()
+    assert "09001" in build_cbv_payload(conn)["counties"]
+
+
+def test_cbv_null_value_keeps_axis_but_no_value(conn):
+    _cbv(conn, year=2026, state="WA", county_fips="53047", county_name="Okanogan",
+         intended_use="Haying", irrigation_practice="Irrigated",
+         organic_practice="Conventional", county_base_value=None, source="synthetic")
+    conn.commit()
+    p = build_cbv_payload(conn)
+    assert p["uses"] == ["Haying-Irrigated"]
+    assert p["value_count"] == 0
+    assert p["counties"] == {}      # nothing shadable
+    assert p["min"] is None
+
+
+def test_cbv_multiple_years(conn):
+    _cbv(conn, year=2025, state="WA", county_fips="53047", county_name="Okanogan",
+         intended_use="Grazing", irrigation_practice="Non-Irrigated",
+         organic_practice="Conventional", county_base_value=10.0, source="synthetic")
+    _cbv(conn, year=2026, state="WA", county_fips="53047", county_name="Okanogan",
+         intended_use="Grazing", irrigation_practice="Non-Irrigated",
+         organic_practice="Conventional", county_base_value=13.0, source="synthetic")
+    conn.commit()
+    p = build_cbv_payload(conn)
+    assert p["years"] == [2025, 2026]
+    cell = p["counties"]["53047"]["Grazing"]["Conventional"]
+    assert cell[2025] == 10.0 and cell[2026] == 13.0
+
+
+def test_cbv_organics_are_tracked_per_use(conn):
+    # Grazing carries Conventional only; Haying also carries Organic. The page
+    # rebuilds its Organic dropdown per use so no dead combination is offered.
+    _cbv(conn, year=2026, state="WA", county_fips="53047", county_name="Okanogan",
+         intended_use="Grazing", irrigation_practice="Non-Irrigated",
+         organic_practice="Conventional", county_base_value=12.0, source="synthetic")
+    _cbv(conn, year=2026, state="WA", county_fips="53047", county_name="Okanogan",
+         intended_use="Haying", irrigation_practice="Non-Irrigated",
+         organic_practice="Organic", county_base_value=60.0, source="synthetic")
+    conn.commit()
+    p = build_cbv_payload(conn)
+    assert p["organics"] == ["Conventional", "Organic"]
+    assert p["organics_by_use"] == {"Grazing": ["Conventional"], "Haying": ["Organic"]}
+
+
+# ------------------------------------------------------- optimizer payload
+
+def test_opt_empty_db_is_graceful(conn):
+    p = build_opt_payload(conn)
+    assert p["counties"] == {}
+    assert p["uses"] == [] and p["coverages"] == []
+    assert p["min_win"] is None and p["max_win"] is None
+    assert p["min_net"] is None and p["max_net"] is None
+    assert p["row_count"] == 0 and p["mapping_rows"] == 0
+    assert p["county_count"] == 0 and p["unmatched_grids"] == 0
+
+
+def test_opt_missing_tables_are_graceful():
+    conn = sqlite3.connect(":memory:")  # no schema at all
+    conn.row_factory = sqlite3.Row
+    p = build_opt_payload(conn)
+    assert p["counties"] == {} and p["row_count"] == 0
+    conn.close()
+
+
+def test_opt_partial_swept_grid_without_county_mapping(conn):
+    # Sweep row landed before its grid->county mapping: counted, not shaded.
+    _opt(conn, 27663, win=0.84, win_combo=["JUN-JUL", "AUG-SEP"],
+         win_props=[50, 50], win_net=0.10, net=0.12)
+    conn.commit()
+    p = build_opt_payload(conn)
+    assert p["row_count"] == 1
+    assert p["counties"] == {}
+    assert p["unmatched_grids"] == 1
+    assert p["uses"] == ["Grazing"] and p["coverages"] == ["0.9"]
+
+
+def test_opt_multi_grid_county_takes_best_per_metric(conn):
+    # County 53047 touches grids 100 and 200. Grid 200 wins on win rate,
+    # grid 100 wins on net — the county takes the best of each INDEPENDENTLY.
+    _grid_county(conn, 100, "53047", "Okanogan")
+    _grid_county(conn, 200, "53047", "Okanogan")
+    _opt(conn, 100, win=0.60, win_combo=["JAN-FEB", "MAY-JUN"], win_props=[40, 60],
+         win_net=0.02, net=0.15, net_combo=["JUL-AUG", "SEP-OCT"],
+         net_props=[60, 40], net_win=0.55)
+    _opt(conn, 200, win=0.80, win_combo=["JUN-JUL", "AUG-SEP"], win_props=[50, 50],
+         win_net=0.05, net=0.07, net_combo=["JUN-JUL", "OCT-NOV"],
+         net_props=[55, 45], net_win=0.70)
+    conn.commit()
+    p = build_opt_payload(conn)
+    cell = p["counties"]["53047"]["Grazing"]["0.9"]
+    assert cell["win"] == 0.80          # from grid 200
+    assert cell["net"] == 0.15          # from grid 100
+    g = grids_of(p, cell)
+    assert len(g) == 2
+    # detail sorted best-win-rate first
+    assert g[0]["grid"] == 200
+    assert policy_of(p, g[0]["wp"]) == [["JUN-JUL", "AUG-SEP"], [50, 50]]
+    assert policy_of(p, g[1]["np"]) == [["JUL-AUG", "SEP-OCT"], [60, 40]]
+    assert g[1]["net_win"] == 0.55
+
+
+def test_opt_grid_spanning_two_counties_serves_both(conn):
+    _grid_county(conn, 100, "53047", "Okanogan")
+    _grid_county(conn, 100, "53007", "Chelan")
+    _opt(conn, 100, win=0.7, net=0.09)
+    conn.commit()
+    p = build_opt_payload(conn)
+    assert p["counties"]["53047"]["Grazing"]["0.9"]["win"] == 0.7
+    assert p["counties"]["53007"]["Grazing"]["0.9"]["win"] == 0.7
+    assert p["county_count"] == 2
+    assert p["county_names"] == {"53047": "Okanogan", "53007": "Chelan"}
+
+
+def test_opt_null_metric_left_none_other_kept(conn):
+    _grid_county(conn, 100, "53047", "Okanogan")
+    _opt(conn, 100, win=None, net=0.04)
+    conn.commit()
+    cell = build_opt_payload(conn)["counties"]["53047"]["Grazing"]["0.9"]
+    assert cell["win"] is None and cell["net"] == 0.04
+
+
+def test_opt_min_max_over_aggregated_county_values(conn):
+    # County A: grids 1 (win .5) + 2 (win .9) -> aggregated .9;
+    # County B: grid 3 (win .3). Domain must be over AGGREGATED values,
+    # so min_win = .3 (county B), max_win = .9 — grid 1's .5 is not the min.
+    _grid_county(conn, 1, "53047", "Okanogan")
+    _grid_county(conn, 2, "53047", "Okanogan")
+    _grid_county(conn, 3, "30001", "Beaverhead", state="MT")
+    _opt(conn, 1, win=0.5, net=0.02)
+    _opt(conn, 2, win=0.9, net=0.10)
+    _opt(conn, 3, win=0.3, net=-0.04)
+    conn.commit()
+    p = build_opt_payload(conn)
+    assert p["min_win"] == 0.3 and p["max_win"] == 0.9
+    assert p["min_net"] == -0.04 and p["max_net"] == 0.10
+
+
+def test_opt_uses_and_coverages_axes(conn):
+    _grid_county(conn, 100, "53047", "Okanogan")
+    _opt(conn, 100, use="Grazing", cov=0.9, win=0.7, net=0.05)
+    _opt(conn, 100, use="Haying", cov=0.9, win=0.6, net=0.03)
+    _opt(conn, 100, use="Grazing", cov=0.85, win=0.65, net=0.04)
+    conn.commit()
+    p = build_opt_payload(conn)
+    assert p["uses"] == ["Grazing", "Haying"]
+    assert p["coverages"] == ["0.85", "0.9"]  # numeric ascending, string keys
+    g = p["counties"]["53047"]
+    assert g["Grazing"]["0.9"]["win"] == 0.7
+    assert g["Grazing"]["0.85"]["win"] == 0.65
+    assert g["Haying"]["0.9"]["win"] == 0.6
+
+
+def test_opt_two_coverages_keyed_independently(conn):
+    # Same grid swept at two coverage levels: values must NOT bleed across
+    # coverage keys, and both keys must be present for the client control.
+    _grid_county(conn, 100, "53047", "Okanogan")
+    _opt(conn, 100, cov=0.90, win=0.80, net=0.10,
+         win_combo=["JUN-JUL", "AUG-SEP"], win_props=[50, 50])
+    _opt(conn, 100, cov=0.70, win=0.40, net=-0.02,
+         win_combo=["JAN-FEB", "NOV-DEC"], win_props=[60, 40])
+    conn.commit()
+    p = build_opt_payload(conn)
+    assert p["coverages"] == ["0.7", "0.9"]
+    cell90 = p["counties"]["53047"]["Grazing"]["0.9"]
+    cell70 = p["counties"]["53047"]["Grazing"]["0.7"]
+    assert cell90["win"] == 0.80 and cell70["win"] == 0.40
+    assert policy_of(p, grids_of(p, cell90)[0]["wp"]) == [["JUN-JUL", "AUG-SEP"], [50, 50]]
+    assert policy_of(p, grids_of(p, cell70)[0]["wp"]) == [["JAN-FEB", "NOV-DEC"], [60, 40]]
+    assert p["min_win"] == 0.40 and p["max_win"] == 0.80
+    assert p["min_net"] == -0.02 and p["max_net"] == 0.10
+
+
+def test_opt_fips_zero_padded_in_mapping(conn):
+    _grid_county(conn, 100, "9001", "Hartford", state="CT")
+    _opt(conn, 100, win=0.5, net=0.01)
+    conn.commit()
+    assert "09001" in build_opt_payload(conn)["counties"]
+
+
+def test_opt_python_repr_combos_from_db(conn):
+    _grid_county(conn, 100, "53047", "Okanogan")
+    _opt(conn, 100, win=0.7, net=0.05,
+         win_combo="['JUN-JUL', 'AUG-SEP']", win_props="[50, 50]")
+    conn.commit()
+    p = build_opt_payload(conn)
+    d = grids_of(p, p["counties"]["53047"]["Grazing"]["0.9"])[0]
+    assert policy_of(p, d["wp"]) == [["JUN-JUL", "AUG-SEP"], [50, 50]]
+    assert policy_of(p, d["np"]) is None      # no net combo stored -> -1
+
+
+def test_opt_grid_detail_stored_once_and_policies_interned(conn):
+    # Grid 100 serves two counties and both coverages share one allocation:
+    # 2 sweep rows -> 2 detail records (not 4), 1 interned policy (not 4).
+    _grid_county(conn, 100, "53047", "Okanogan")
+    _grid_county(conn, 100, "53007", "Chelan")
+    _opt(conn, 100, cov=0.9, win=0.8, net=0.10,
+         win_combo=["JUN-JUL", "AUG-SEP"], win_props=[50, 50],
+         net_combo=["JUN-JUL", "AUG-SEP"], net_props=[50, 50])
+    _opt(conn, 100, cov=0.7, win=0.4, net=0.02,
+         win_combo=["JUN-JUL", "AUG-SEP"], win_props=[50, 50],
+         net_combo=["JUN-JUL", "AUG-SEP"], net_props=[50, 50])
+    conn.commit()
+    p = build_opt_payload(conn)
+    assert len(p["grid_detail"]) == 2
+    assert p["policies"] == [[["JUN-JUL", "AUG-SEP"], [50, 50]]]
+    # both counties reference the SAME detail record for a given coverage
+    a = p["counties"]["53047"]["Grazing"]["0.9"]["g"]
+    b = p["counties"]["53007"]["Grazing"]["0.9"]["g"]
+    assert a == b and len(a) == 1
+    assert grids_of(p, p["counties"]["53047"]["Grazing"]["0.7"])[0]["win"] == 0.4
+
+
+def test_opt_metrics_rounded_below_display_precision(conn):
+    # The sweep's full float repr costs ~12 bytes/value across ~200k rows; the
+    # page shows win to 0.1% and net to $0.001, so rounding changes nothing
+    # visible. Assert the rounding actually happens and stays well inside that.
+    _grid_county(conn, 100, "53047", "Okanogan")
+    _opt(conn, 100, win=0.42105263157894735, net=0.33313671111111115)
+    conn.commit()
+    p = build_opt_payload(conn)
+    d = grids_of(p, p["counties"]["53047"]["Grazing"]["0.9"])[0]
+    assert d["win"] == 0.4211 and d["net"] == 0.33314
+    assert abs(d["win"] - 0.42105263157894735) < 5e-5
+    assert abs(d["net"] - 0.33313671111111115) < 5e-6
+
+
+def test_opt_intended_use_already_uses_the_shared_key(conn):
+    _grid_county(conn, 100, "53047", "Okanogan")
+    _opt(conn, 100, use="Haying-Irrigated", win=0.7, net=0.05)
+    conn.commit()
+    p = build_opt_payload(conn)
+    assert p["uses"] == ["Haying-Irrigated"]
+    assert p["counties"]["53047"]["Haying-Irrigated"]["0.9"]["net"] == 0.05
+
+
+# ----------------------------------------------------------- merged payload
+
+@pytest.fixture
+def merged(conn):
+    """Both datasets, deliberately overlapping on 53047 but not on every use."""
+    _cbv(conn, year=2026, state="WA", county_fips="53047", county_name="Okanogan",
+         intended_use="Grazing", irrigation_practice="Non-Irrigated",
+         organic_practice="Conventional", county_base_value=12.50, source="synthetic")
+    _cbv(conn, year=2026, state="WA", county_fips="53047", county_name="Okanogan",
+         intended_use="Haying", irrigation_practice="Irrigated",
+         organic_practice="Conventional", county_base_value=200.00, source="synthetic")
+    _cbv(conn, year=2026, state="MT", county_fips="30001", county_name="Beaverhead",
+         intended_use="Grazing", irrigation_practice="Non-Irrigated",
+         organic_practice="Conventional", county_base_value=7.25, source="synthetic")
+    _grid_county(conn, 100, "53047", "Okanogan")
+    _grid_county(conn, 100, "30001", "Beaverhead", state="MT")
+    for use in ("Grazing", "Haying", "Haying-Irrigated"):
+        for cov in (0.7, 0.9):
+            _opt(conn, 100, use=use, cov=cov, win=0.7, net=0.10,
+                 win_combo=["JUN-JUL", "AUG-SEP"], win_props=[50, 50],
+                 net_combo=["JUL-AUG", "SEP-OCT"], net_props=[60, 40], net_win=0.6,
+                 win_rate_sum=0.25, net_rate_sum=0.30)
+    conn.commit()
+    return conn
+
+
+def test_merged_payload_shares_one_use_axis(merged):
+    p = build_prf_page_payload(merged)
+    # union of both datasets' use keys — CBV has no "Haying" row here, the
+    # sweep does, and both appear (each metric family simply renders neutral
+    # where its own dataset has nothing).
+    assert p["uses"] == ["Grazing", "Haying", "Haying-Irrigated"]
+    assert p["cbv"]["uses"] == ["Grazing", "Haying-Irrigated"]
+    assert p["opt"]["uses"] == ["Grazing", "Haying", "Haying-Irrigated"]
+    # Same use key indexes both trees for the same county.
+    assert p["cbv"]["counties"]["53047"]["Haying-Irrigated"]["Conventional"][2026] == 200.0
+    assert p["opt"]["counties"]["53047"]["Haying-Irrigated"]["0.9"]["net"] == 0.10
+
+
+def test_merged_payload_carries_both_domains_and_names(merged):
+    p = build_prf_page_payload(merged)
+    assert p["cbv"]["min"] == 7.25 and p["cbv"]["max"] == 200.0
+    assert p["opt"]["min_win"] == 0.7 and p["opt"]["max_net"] == 0.10
+    assert p["county_names"]["53047"] == "Okanogan"
+    assert p["county_names"]["30001"] == "Beaverhead"
+    assert p["opt"]["coverages"] == ["0.7", "0.9"]
+    assert "generated" in p
+
+
+def test_merged_payload_declares_the_productivity_election_range(merged):
+    p = build_prf_page_payload(merged)
+    # RMA allows 60–150%; the page defaults to 100% (a no-op multiplier).
+    assert p["prod"] == {"min": 60, "max": 150, "default": 100}
+    assert p["default_coverage"] == "0.9"
+
+
+def test_per_acre_inputs_are_all_present_for_a_county(merged):
+    """The four factors of best_net x CBV x coverage x productivity are all
+    reachable from the payload with ONE use key — this is what the client
+    multiplies, so assert the arithmetic the page will do."""
+    p = build_prf_page_payload(merged)
+    net = p["opt"]["counties"]["53047"]["Grazing"]["0.9"]["net"]
+    cbv = p["cbv"]["counties"]["53047"]["Grazing"]["Conventional"][2026]
+    assert net * cbv * 0.90 * 1.00 == pytest.approx(1.125)
+    # 150% productivity scales it by exactly 1.5
+    assert net * cbv * 0.90 * 1.50 == pytest.approx(1.6875)
+    # coverage participates too: same county at 0.70
+    net70 = p["opt"]["counties"]["53047"]["Grazing"]["0.7"]["net"]
+    assert net70 * cbv * 0.70 * 1.00 == pytest.approx(0.875)
+
+
+def test_per_acre_needs_both_datasets(merged):
+    """A use with a swept grid but no CBV yields no per-acre value — the page
+    must render it neutral rather than invent a County Base Value."""
+    p = build_prf_page_payload(merged)
+    assert "Haying" in p["opt"]["counties"]["53047"]
+    assert "Haying" not in p["cbv"]["counties"]["53047"]
+
+
+def test_merged_empty_db_is_graceful(conn):
+    p = build_prf_page_payload(conn)
+    assert p["uses"] == []
+    assert p["cbv"]["counties"] == {} and p["opt"]["counties"] == {}
+    assert p["cbv"]["row_count"] == 0 and p["opt"]["row_count"] == 0
+    assert p["county_names"] == {}
+
+
+def test_merged_missing_tables_are_graceful():
+    conn = sqlite3.connect(":memory:")  # no schema at all
+    conn.row_factory = sqlite3.Row
+    p = build_prf_page_payload(conn)
+    assert p["uses"] == [] and p["cbv"]["counties"] == {} and p["opt"]["counties"] == {}
+    conn.close()
+
+
+# --------------------------------------------------------------------- html
+
+def test_render_embeds_payload_and_assets(merged):
+    p = build_prf_page_payload(merged)
+    html = render_prf_page_html(p, d3_js="var d3js=1;", topojson_js="var tj=1;",
+                                atlas={"objects": {}})
+    assert "var d3js=1;" in html and "var tj=1;" in html
+    assert '"53047"' in html
+    assert "__PAYLOAD__" not in html and "__ATLAS__" not in html
+    assert "__D3__" not in html and "__TOPOJSON__" not in html
+
+
+def test_render_offers_all_four_metrics_and_the_shared_controls(merged):
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    for opt in ('value="cbv"', 'value="win"', 'value="net"', 'value="acre"'):
+        assert opt in html
+    assert 'id="mSel"' in html            # the metric dropdown
+    assert 'id="fUse"' in html            # one intended-use control
+    assert 'id="covSeg"' in html          # coverage level
+    assert 'id="fOrganic"' in html and 'id="fYear"' in html
+    assert 'id="fProd"' in html           # productivity factor
+    assert 'min="60"' in html and 'max="150"' in html and 'value="100"' in html
+    # dual-thumb slider with value bubbles, readout and reset (prfmap's pattern)
+    for el in ('id="rMin"', 'id="rMax"', 'id="rBubbleLo"', 'id="rBubbleHi"',
+               'id="rReadout"', 'id="rReset"'):
+        assert el in html
+
+
+def test_render_states_the_per_acre_formula(merged):
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    assert "best net (per $1 of protection) &times; County Base Value" in html
+    assert "coverage level &times; productivity factor" in html
+
+
+def test_render_is_self_contained_no_network(merged):
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="var d3js=1;", topojson_js="var tj=1;",
+                                atlas={"objects": {}})
+    assert "http://" not in html and "https://" not in html
+    assert "<script src" not in html and "<link rel" not in html
+
+
+def test_render_rejects_script_closing_assets(conn):
+    p = build_prf_page_payload(conn)
+    with pytest.raises(ValueError):
+        render_prf_page_html(p, d3_js="</script><script>evil()", topojson_js="",
+                             atlas={})
+
+
+# ------------------------------------------------- commission rates (seed CSV)
+
+def test_commission_csv_parses_rates_and_skips_comment_lines(tmp_path):
+    p = _write_commission(tmp_path, [
+        ("NA", "NAU Country Insurance Company", 12.5, "2026 agreement"),
+        ("RH", "ACE American (Rain and Hail)", None, ""),
+    ])
+    c = load_aip_commission(p)
+    by_code = {a["code"]: a for a in c["aips"]}
+    assert by_code["NA"]["pct"] == 12.5
+    assert by_code["NA"]["notes"] == "2026 agreement"
+    # BLANK IS NOT ZERO: an unentered rate must stay unknown, or the map would
+    # confidently shade every county $0.00/acre and look like a real answer.
+    assert by_code["RH"]["pct"] is None
+    assert c["with_rate"] == 1 and c["row_count"] == 2
+    assert c["path"] == str(p)
+
+
+def test_commission_csv_all_blank_is_the_shipped_state(tmp_path):
+    p = _write_commission(tmp_path, [("NA", "NAU", None, ""), ("EF", "RCIS", None, "")])
+    c = load_aip_commission(p)
+    assert c["row_count"] == 2 and c["with_rate"] == 0
+    assert all(a["pct"] is None for a in c["aips"])
+
+
+def test_commission_csv_rejects_junk_and_out_of_range(tmp_path):
+    p = _write_commission(tmp_path, [
+        ("A", "Alpha", "tbd", ""),      # not a number
+        ("B", "Bravo", -5, ""),         # negative share of premium
+        ("C", "Charlie", 150, ""),      # >100% of premium
+        ("D", "Delta", "12.5%", ""),    # a human typed the % sign
+        ("E", "Echo", 0, ""),           # a genuine, deliberate zero
+    ])
+    by_code = {a["code"]: a for a in load_aip_commission(p)["aips"]}
+    assert by_code["A"]["pct"] is None
+    assert by_code["B"]["pct"] is None
+    assert by_code["C"]["pct"] is None
+    assert by_code["D"]["pct"] == 12.5
+    assert by_code["E"]["pct"] == 0.0   # entered zero IS a rate; blank is not
+
+
+def test_commission_csv_missing_file_is_graceful(tmp_path):
+    c = load_aip_commission(tmp_path / "nope.csv")
+    assert c["aips"] == [] and c["with_rate"] == 0 and c["row_count"] == 0
+
+
+def test_shipped_seed_csv_lists_aips_and_labels_any_rates_as_sample():
+    """The committed file lists AIPs, and any rate it carries is LABELLED sample.
+
+    This test used to assert with_rate == 0 — "never commit a made-up rate". The file now
+    deliberately ships a sample AIP x region rate card so the commission map renders before
+    real rates are entered. The guard therefore moves rather than disappears: invented
+    numbers may ship, but they may never ship UNMARKED, because an unlabelled plausible rate
+    is indistinguishable from a negotiated one and would be quoted to a producer as real.
+    """
+    c = load_aip_commission()
+    assert c["row_count"] >= 10
+    assert c["path"] == "data/seed/aip_commission.csv"
+
+    raw = (Path(__file__).resolve().parents[1] / "data/seed/aip_commission.csv").read_text()
+    assert "SAMPLE DATA" in raw.upper(), "seed rates ship without a sample-data warning"
+    if c["with_rate"]:
+        for a in c["aips"]:
+            if a["pct"] is not None or a["by_region"]:
+                assert "sample" in a["notes"].lower(), (
+                    f"{a['name']} carries a rate with no 'sample' note — if this is a real "
+                    f"negotiated rate, drop the sample banner from the file header")
+
+
+def test_region_rates_are_per_aip_and_per_region():
+    """A rate is a cell in an AIP x region table, not a property of either alone."""
+    c = load_aip_commission()
+    assert c["regions"], "no region columns parsed from the seed CSV"
+    rated = [a for a in c["aips"] if a["by_region"]]
+    assert rated, "no AIP carries a per-region rate"
+    # Varies WITHIN an AIP across regions...
+    assert any(len(set(a["by_region"].values())) > 1 for a in rated), \
+        "every AIP charges one flat rate across regions — the region axis does nothing"
+    # ...and BETWEEN AIPs for the same region...
+    first = c["regions"][0]
+    vals = {a["by_region"].get(first) for a in rated if first in a["by_region"]}
+    assert len(vals) > 1, f"every AIP charges the same rate in {first}"
+    # ...and rates OVERLAP across AIPs (the same rate recurs), which is why the map cannot
+    # be reconstructed from the AIP axis alone.
+    allv = [a["by_region"].get(first) for a in rated if first in a["by_region"]]
+    assert len(allv) > len(set(allv)), "no rate is shared by two AIPs"
+
+
+# ------------------------------------------------------ stored premium rate-sum
+
+def test_rate_sum_travels_with_the_best_net_grid(conn):
+    """The county's premium must come from the SAME grid that won on net.
+
+    A county spanning grids takes the best net; commission is the commission on
+    THAT policy, so pairing the winning net with another grid's premium would
+    price a policy nobody is being recommended.
+    """
+    _grid_county(conn, 1, "53047")
+    _grid_county(conn, 2, "53047")
+    _opt(conn, 1, net=0.05, net_rate_sum=0.90, win=0.4)   # expensive, poorer net
+    _opt(conn, 2, net=0.20, net_rate_sum=0.10, win=0.9)   # cheap, better net
+    conn.commit()
+    cell = build_opt_payload(conn)["counties"]["53047"]["Grazing"]["0.9"]
+    assert cell["net"] == 0.20
+    assert cell["nrs"] == 0.10           # grid 2's rate, not grid 1's, and not the max
+    assert build_opt_payload(conn)["grid_detail"][cell["ni"]]["grid"] == 2
+
+
+def test_rate_sum_null_when_the_sweep_never_stored_one(conn):
+    _grid_county(conn, 1, "53047")
+    _opt(conn, 1, net=0.20, net_rate_sum=None)
+    conn.commit()
+    cell = build_opt_payload(conn)["counties"]["53047"]["Grazing"]["0.9"]
+    assert cell["nrs"] is None           # never 0 — a missing rate is not a free policy
+
+
+def test_rate_sum_column_absent_is_graceful():
+    """A catalog.db predating the rate-sum columns must still render."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE prf_opt_best (grid_id INTEGER, intended_use TEXT, "
+        "coverage_level REAL, best_win_rate REAL, best_win_combo TEXT, "
+        "best_win_props TEXT, best_win_avg_net REAL, best_net REAL, "
+        "best_net_combo TEXT, best_net_props TEXT, best_net_win_rate REAL)")
+    conn.execute("CREATE TABLE prf_grid_county (grid_id INTEGER, state TEXT, "
+                 "county_fips TEXT, county_name TEXT, source TEXT)")
+    conn.execute("INSERT INTO prf_grid_county VALUES (1,'WA','53047','Okanogan','x')")
+    conn.execute("INSERT INTO prf_opt_best VALUES (1,'Grazing',0.9,0.5,'[]','[]',0,0.2,"
+                 "'[\"JUL-AUG\"]','[100]',0.4)")
+    conn.commit()
+    cell = build_opt_payload(conn)["counties"]["53047"]["Grazing"]["0.9"]
+    assert cell["net"] == 0.2 and cell["nrs"] is None
+    conn.close()
+
+
+# --------------------------------------------------- commission arithmetic
+
+def commission_per_acre(cbv, coverage, productivity, rate_sum, pct):
+    """The page's client-side formula, mirrored so the test asserts the arithmetic.
+
+        protection/acre = CBV x coverage x productivity
+        premium/acre    = protection/acre x SUM(allocation x rate)
+        commission/acre = premium/acre x pct/100
+    """
+    if cbv is None or rate_sum is None or pct is None:
+        return None
+    return cbv * coverage * productivity * rate_sum * pct / 100.0
+
+
+def test_commission_arithmetic_is_a_percent_of_total_premium(merged):
+    p = build_prf_page_payload(merged)
+    cell = p["opt"]["counties"]["53047"]["Grazing"]["0.9"]
+    cbv = p["cbv"]["counties"]["53047"]["Grazing"]["Conventional"][2026]
+    assert (cbv, cell["nrs"]) == (12.50, 0.30)
+    # protection 12.50 x 0.90 x 1.00 = 11.25/ac; premium 11.25 x 0.30 = 3.375/ac
+    assert cbv * 0.90 * 1.00 * cell["nrs"] == pytest.approx(3.375)
+    # commission at 12.5% of TOTAL premium (subsidised portion included)
+    assert commission_per_acre(cbv, 0.90, 1.00, cell["nrs"], 12.5) == pytest.approx(0.421875)
+
+
+def test_commission_scales_linearly_with_the_rate(merged):
+    """Doubling the commission rate doubles commission per acre — nothing else moves."""
+    p = build_prf_page_payload(merged)
+    cell = p["opt"]["counties"]["53047"]["Grazing"]["0.9"]
+    cbv = p["cbv"]["counties"]["53047"]["Grazing"]["Conventional"][2026]
+    one = commission_per_acre(cbv, 0.90, 1.00, cell["nrs"], 10.0)
+    two = commission_per_acre(cbv, 0.90, 1.00, cell["nrs"], 20.0)
+    assert two == pytest.approx(2 * one)
+
+
+def test_commission_tracks_coverage_and_productivity(merged):
+    p = build_prf_page_payload(merged)
+    g = p["opt"]["counties"]["53047"]["Grazing"]
+    cbv = p["cbv"]["counties"]["53047"]["Grazing"]["Conventional"][2026]
+    base = commission_per_acre(cbv, 0.90, 1.00, g["0.9"]["nrs"], 12.5)
+    assert commission_per_acre(cbv, 0.90, 1.50, g["0.9"]["nrs"], 12.5) == pytest.approx(1.5 * base)
+    # coverage enters BOTH the protection and (via its own rate row) the stored rate-sum;
+    # here the fixture uses the same rate-sum, so only the protection factor moves.
+    assert commission_per_acre(cbv, 0.70, 1.00, g["0.7"]["nrs"], 12.5) == pytest.approx(
+        base * 0.70 / 0.90)
+
+
+def test_commission_is_none_without_a_rate_a_cbv_or_a_premium(merged):
+    p = build_prf_page_payload(merged)
+    cell = p["opt"]["counties"]["53047"]["Grazing"]["0.9"]
+    cbv = p["cbv"]["counties"]["53047"]["Grazing"]["Conventional"][2026]
+    assert commission_per_acre(cbv, 0.90, 1.00, cell["nrs"], None) is None   # no AIP rate
+    assert commission_per_acre(None, 0.90, 1.00, cell["nrs"], 12.5) is None  # no CBV
+    assert commission_per_acre(cbv, 0.90, 1.00, None, 12.5) is None          # no rate-sum
+
+
+def test_commission_ranks_counties_by_premium_not_by_cbv(conn):
+    """The point of the metric: the biggest CBV is not the biggest commission.
+
+    Premium rates vary several-fold between grids, so a modest-CBV county on an
+    expensive grid out-earns a high-CBV county on a cheap one.
+    """
+    for fips, name, cbv, rate in (("53047", "Okanogan", 12.50, 0.90),
+                                  ("30001", "Beaverhead", 85.00, 0.05)):
+        _cbv(conn, year=2026, state="WA", county_fips=fips, county_name=name,
+             intended_use="Grazing", irrigation_practice="Non-Irrigated",
+             organic_practice="Conventional", county_base_value=cbv, source="synthetic")
+    _grid_county(conn, 1, "53047")
+    _grid_county(conn, 2, "30001", state="MT")
+    _opt(conn, 1, net=0.1, net_rate_sum=0.90)
+    _opt(conn, 2, net=0.1, net_rate_sum=0.05)
+    conn.commit()
+    p = build_prf_page_payload(conn)
+
+    def comm(fips):
+        return commission_per_acre(
+            p["cbv"]["counties"][fips]["Grazing"]["Conventional"][2026], 0.90, 1.00,
+            p["opt"]["counties"][fips]["Grazing"]["0.9"]["nrs"], 12.5)
+
+    # CBV ranking says Beaverhead ($85) beats Okanogan ($12.50)...
+    assert (p["cbv"]["counties"]["30001"]["Grazing"]["Conventional"][2026]
+            > p["cbv"]["counties"]["53047"]["Grazing"]["Conventional"][2026])
+    # ...but commission ranking reverses it — premium, not CBV, is what commission follows.
+    assert comm("53047") > comm("30001")
+
+
+# ------------------------------------------------- commission in the payload/HTML
+
+def test_merged_payload_carries_the_commission_roster(merged):
+    p = build_prf_page_payload(merged)
+    assert p["comm"]["path"] == "data/seed/aip_commission.csv"
+    # Ships a labelled SAMPLE rate card; see test_shipped_seed_csv_* for the guard that
+    # any shipped rate is marked as sample rather than passed off as negotiated.
+    assert p["comm"]["with_rate"] >= 0
+    assert "commzone" in p and isinstance(p["commzone"]["zones"], dict)
+    assert isinstance(p["comm"]["aips"], list)
+
+
+def test_merged_payload_accepts_a_commission_csv_override(merged, tmp_path):
+    p = build_prf_page_payload(
+        merged, commission_csv=_write_commission(tmp_path, [("NA", "NAU", 12.5, "")]))
+    assert p["comm"]["with_rate"] == 1
+    assert p["comm"]["aips"][0]["pct"] == 12.5
+
+
+def test_render_offers_the_commission_metric_and_its_aip_selector(merged, tmp_path):
+    p = build_prf_page_payload(
+        merged, commission_csv=_write_commission(tmp_path, [("NA", "NAU", 12.5, "")]))
+    html = render_prf_page_html(p, d3_js="", topojson_js="", atlas={})
+    assert 'value="comm"' in html          # the 5th dropdown option
+    assert 'id="fAip"' in html             # which AIP's rate to apply
+    assert "NAU" in html and "12.5" in html
+    # the four producer metrics are untouched
+    for opt in ('value="cbv"', 'value="win"', 'value="net"', 'value="acre"'):
+        assert opt in html
+
+
+def test_render_states_the_commission_formula_and_its_caveats(merged):
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    assert "premium rate) &times; commission %" in html
+    assert "total</b> premium" in html               # not just the producer-paid share
+    assert "recommended</b> (best-net) policy" in html
+    assert "data/seed/aip_commission.csv" in html    # where to enter the rate
+    assert "no commission rates set" in html.lower() # the empty-rates degradation
+
+
+def test_render_warns_that_use_does_not_move_the_rate_metrics(merged):
+    """Switching intended use leaves win-rate / return-per-$1 numerically put on
+    effectively every grid (PRF rates key off rainfall, not forage use); without
+    a note the control looks broken."""
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    assert html.count('Intended use does not move this metric') == 2   # win + net
+    assert 'data-m="win"' in html and 'data-m="net"' in html

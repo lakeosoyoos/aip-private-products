@@ -206,6 +206,29 @@ def _policy_entry(row) -> dict:
     }
 
 
+def rate_sum(combo, props, rates: dict) -> float | None:
+    """Allocation-weighted premium rate: SUM(props_i/100 x rates[combo_i]).
+
+    Premium is protection x rate and PRF protection per acre is CBV x coverage x
+    productivity, so CBV x coverage x productivity x this number is the gross premium on one
+    acre -- which is what the map's agent-commission metric is a percentage of. It is stored
+    on the prf_opt_best row (best_win_rate_sum / best_net_rate_sum) because the shipped app
+    DB drops prf_grid_rate; see scripts/backfill_rate_sums.py, which computes the identical
+    number for rows written before this existed.
+
+    None (never a partial sum) when an interval in the allocation carries no rate.
+    """
+    if not combo or not props or len(combo) != len(props):
+        return None
+    total = 0.0
+    for interval, pct in zip(combo, props):
+        r = rates.get(interval)
+        if r is None:
+            return None
+        total += (float(pct) / 100.0) * float(r)
+    return total
+
+
 def compute_grid_best(conn, grid_id: int, use: str = "Grazing",
                       coverage: float = 0.90, years=YEARS,
                       top_n: int = TOP_N) -> dict:
@@ -254,6 +277,10 @@ def compute_grid_best(conn, grid_id: int, use: str = "Grazing",
     by_win = prfopt.rank_by_win_rate(df, top_n)
     by_net = prfopt.rank_by_avg_net_return(df, top_n)
     w0, n0 = by_win.iloc[0], by_net.iloc[0]
+    win_combo = list(ast.literal_eval(w0["combinations"]))
+    win_props = list(ast.literal_eval(w0["proportions"]))
+    net_combo = list(ast.literal_eval(n0["combinations"]))
+    net_props = list(ast.literal_eval(n0["proportions"]))
     return {
         "grid_id": int(grid_id),
         "intended_use": use,
@@ -262,15 +289,20 @@ def compute_grid_best(conn, grid_id: int, use: str = "Grazing",
         "year_max": int(max(yrs)),
         "n_policies": int(len(df)),
         "best_win_rate": float(w0["win rate"]),
-        "best_win_combo": json.dumps(list(ast.literal_eval(w0["combinations"]))),
-        "best_win_props": json.dumps(list(ast.literal_eval(w0["proportions"]))),
+        "best_win_combo": json.dumps(win_combo),
+        "best_win_props": json.dumps(win_props),
         "best_win_avg_net": float(w0["average_net_return"]),
         "best_net": float(n0["average_net_return"]),
-        "best_net_combo": json.dumps(list(ast.literal_eval(n0["combinations"]))),
-        "best_net_props": json.dumps(list(ast.literal_eval(n0["proportions"]))),
+        "best_net_combo": json.dumps(net_combo),
+        "best_net_props": json.dumps(net_props),
         "best_net_win_rate": float(n0["win rate"]),
         "median_net": float(df["average_net_return"].median()),
         "pct_positive": float((df["average_net_return"] > 0).mean()),
+        # Weighted premium rate for each winner, from the SAME `rates` the scoring used --
+        # so the app can turn a stored allocation into premium (and agent commission) per
+        # acre without shipping the 2.1M-row prf_grid_rate table.
+        "best_win_rate_sum": rate_sum(win_combo, win_props, rates),
+        "best_net_rate_sum": rate_sum(net_combo, net_props, rates),
         "top_json": json.dumps({
             "by_win_rate": [_policy_entry(r) for _, r in by_win.iterrows()],
             "by_avg_net": [_policy_entry(r) for _, r in by_net.iterrows()],
@@ -288,13 +320,16 @@ def upsert_best(conn, row: dict, source: str = "prfsweep") -> None:
              (grid_id, intended_use, coverage_level, year_min, year_max,
               n_policies, best_win_rate, best_win_combo, best_win_props,
               best_win_avg_net, best_net, best_net_combo, best_net_props,
-              best_net_win_rate, median_net, pct_positive, top_json,
+              best_net_win_rate, median_net, pct_positive,
+              best_win_rate_sum, best_net_rate_sum, top_json,
               source, fetched_at)
            VALUES (:grid_id, :intended_use, :coverage_level, :year_min,
                    :year_max, :n_policies, :best_win_rate, :best_win_combo,
                    :best_win_props, :best_win_avg_net, :best_net,
                    :best_net_combo, :best_net_props, :best_net_win_rate,
-                   :median_net, :pct_positive, :top_json, :source, :fetched_at)
+                   :median_net, :pct_positive,
+                   :best_win_rate_sum, :best_net_rate_sum,
+                   :top_json, :source, :fetched_at)
            ON CONFLICT(grid_id, intended_use, coverage_level) DO UPDATE SET
              year_min=excluded.year_min, year_max=excluded.year_max,
              n_policies=excluded.n_policies,
@@ -308,9 +343,14 @@ def upsert_best(conn, row: dict, source: str = "prfsweep") -> None:
              best_net_win_rate=excluded.best_net_win_rate,
              median_net=excluded.median_net,
              pct_positive=excluded.pct_positive,
+             best_win_rate_sum=excluded.best_win_rate_sum,
+             best_net_rate_sum=excluded.best_net_rate_sum,
              top_json=excluded.top_json,
              source=excluded.source, fetched_at=excluded.fetched_at""",
-        {**row, "source": source, "fetched_at": _now_iso()})
+        # Rate sums default to None so a row built by an older caller (or a grid whose
+        # rates are incomplete) still writes — NULL means "not known", not zero.
+        {"best_win_rate_sum": None, "best_net_rate_sum": None,
+         **row, "source": source, "fetched_at": _now_iso()})
     conn.commit()
 
 

@@ -263,3 +263,63 @@ def test_sweep_records_skips(adm_dir, catalog, monkeypatch):
     assert res["swept"] == 1
     assert 102 in res["skipped"]
     assert "no index data" in res["skipped"][102]
+
+
+# ---------------------------------------------------------------------------
+# rate_sum — the allocation-weighted premium rate stored with each winner
+# ---------------------------------------------------------------------------
+
+def test_rate_sum_weights_each_interval_by_its_allocation():
+    rates = {"JAN-FEB": 0.18, "JUL-AUG": 0.3488, "AUG-SEP": 0.3368}
+    # 40% of 0.18 + 60% of 0.3488 — the arithmetic the premium/commission rests on
+    assert prfsweep.rate_sum(["JAN-FEB", "JUL-AUG"], [40, 60], rates) == pytest.approx(0.28128)
+    # a single-interval allocation is just that interval's rate
+    assert prfsweep.rate_sum(["AUG-SEP"], [100], rates) == pytest.approx(0.3368)
+    # order does not matter, only the weights
+    assert prfsweep.rate_sum(["JUL-AUG", "JAN-FEB"], [60, 40], rates) == pytest.approx(0.28128)
+
+
+def test_rate_sum_is_none_rather_than_partial_when_an_interval_is_unrated():
+    """A premium summed over SOME of the intervals is wrong, not approximate."""
+    rates = {"JAN-FEB": 0.18}
+    assert prfsweep.rate_sum(["JAN-FEB", "JUL-AUG"], [40, 60], rates) is None
+    assert prfsweep.rate_sum([], [], rates) is None
+    assert prfsweep.rate_sum(["JAN-FEB"], [], rates) is None       # props missing
+    assert prfsweep.rate_sum(["JAN-FEB", "JUL-AUG"], [100], rates) is None  # length mismatch
+
+
+def test_compute_grid_best_stores_both_rate_sums(catalog):
+    """The sweep populates the rate-sums natively, from the same rates it scored on."""
+    _seed_grid(catalog)
+    row = compute_grid_best(catalog, GRID)
+    rates = {iv: 0.10 + 0.01 * i for i, iv in enumerate(prfopt.INTERVALS)}
+    for combo_key, props_key, sum_key in (
+            ("best_win_combo", "best_win_props", "best_win_rate_sum"),
+            ("best_net_combo", "best_net_props", "best_net_rate_sum")):
+        combo, props = json.loads(row[combo_key]), json.loads(row[props_key])
+        expect = sum(p / 100 * rates[iv] for iv, p in zip(combo, props))
+        assert row[sum_key] == pytest.approx(expect)
+        # sanity: a weighted average of rates lies between the smallest and largest
+        assert min(rates.values()) <= row[sum_key] <= max(rates.values())
+
+
+def test_rate_sums_survive_the_upsert_round_trip(catalog):
+    _seed_grid(catalog)
+    row = compute_grid_best(catalog, GRID)
+    upsert_best(catalog, row)
+    got = catalog.execute(
+        "SELECT best_win_rate_sum, best_net_rate_sum FROM prf_opt_best").fetchone()
+    assert got["best_win_rate_sum"] == pytest.approx(row["best_win_rate_sum"])
+    assert got["best_net_rate_sum"] == pytest.approx(row["best_net_rate_sum"])
+
+
+def test_upsert_best_tolerates_a_row_without_rate_sums(catalog):
+    """An older caller's row still writes — NULL means unknown, not zero."""
+    _seed_grid(catalog)
+    row = compute_grid_best(catalog, GRID)
+    row.pop("best_win_rate_sum")
+    row.pop("best_net_rate_sum")
+    upsert_best(catalog, row)
+    got = catalog.execute(
+        "SELECT best_win_rate_sum, best_net_rate_sum FROM prf_opt_best").fetchone()
+    assert got["best_win_rate_sum"] is None and got["best_net_rate_sum"] is None

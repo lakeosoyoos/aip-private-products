@@ -6,8 +6,18 @@ data/cache/
 # file (~11.5M rows the app never reads) — far past GitHub's 100 MB file limit.
 # The app ships data/catalog_app.db instead (scripts/build_app_db.py), which is committed.
 data/catalog.db
-data/catalog.db-wal
-data/catalog.db-shm
+
+# SQLite sidecars, by PATTERN so this covers catalog_app.db too. Named entries used to
+# cover only catalog.db, leaving data/catalog_app.db-wal/-shm untracked-but-committable —
+# and committing a -wal next to the .db it belongs to means SQLite replays a stale log over
+# a newer database on the deploy host. scripts/build_app_db.py now ships the app DB in
+# DELETE mode so these should not appear at all; this is the backstop if one ever does.
+*.db-wal
+*.db-shm
+
+# Recovery copies (e.g. lrp_gap_history.csv.bak, written by scripts/rebuild_gap_history.py
+# before it corrects the contaminated premium history). Useful locally, never shipped.
+*.bak
 
 # --- Secrets ---
 .streamlit/secrets.toml
@@ -26,6 +36,10 @@ __pycache__/
 # Keep the output/ directory (via .gitkeep) but not the generated workbooks or lock files.
 output/*.xlsx
 output/~$*.xlsx
+# Transient run logs from the rebuild/monthly scripts — machine-specific timings and
+# progress counters, regenerated on every run and of no value in history.
+output/*.log
+output/monthly_log.txt
 
 # --- LRP Signal (lrp_signal.py writes next to itself) ---
 # HTTP cache of RMA rate files and CME quotes — re-fetchable, auto-created.

@@ -39,6 +39,11 @@ class Config:
     rma_sob_base_url: str
     serff_toi_code: str
     serff_user_agent: str
+    # First crop year to load from each Summary-of-Business file family. RMA posts the
+    # coverage-level file (sobcov) from 1989 and the unit-structure file (sobtpu) from 1999;
+    # raise these to load less history.
+    rma_sob_sobcov_start_year: int = 1989
+    rma_sob_sobtpu_start_year: int = 1999
     _raw: configparser.ConfigParser = field(repr=False, default=None)
 
     def source_enabled(self, name: str) -> bool:
@@ -83,5 +88,7 @@ def load(path: Path | str | None = None) -> Config:
         serff_user_agent=(serff.get("browser_user_agent") if serff else "")
         or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        rma_sob_sobcov_start_year=int((sob.get("sobcov_start_year") if sob else None) or 1989),
+        rma_sob_sobtpu_start_year=int((sob.get("sobtpu_start_year") if sob else None) or 1999),
         _raw=parser,
     )

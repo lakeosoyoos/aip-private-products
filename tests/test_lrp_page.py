@@ -30,7 +30,9 @@ def test_lrp_signal_imports_with_all_runtime_deps():
     # A few contract constants lrp_page destructures on import.
     assert lrp_signal.CWT_PER_HEAD > 0
     assert lrp_signal.TENORS_WEEKS == [13, 17, 21, 26, 30, 34, 39, 43, 47, 52]
-    assert lrp_signal.COVERAGE_LEVELS[0] == 0.70
+    # Lowest level RMA publishes is 0.75 — this used to assert 0.70, pinning a level
+    # that does not exist. The full set is asserted in tests/test_lrp_premium.py.
+    assert lrp_signal.COVERAGE_LEVELS[0] == 0.75
     for name in ("fetch_lrp_current", "fetch_cme_futures_curve", "build_grid",
                  "build_chart_figure", "size_delta_hedge", "sales_today"):
         assert callable(getattr(lrp_signal, name)), name
@@ -68,6 +70,9 @@ def test_app_wires_the_lrp_tab():
     the tab body) so the matplotlib/scipy import cost lands after the
     passcode gate rather than on every cold page load."""
     src = (ROOT / "streamlit_app.py").read_text()
+    # The TAB is labelled plainly "LRP" since the bar is product-first (Row Crop /
+    # PRF / LRP / DRP); the bull stays as the heading inside the tab body.
+    assert '"LRP"' in src, "no LRP tab in the tab list"
     assert "🐂 LRP Signal" in src
     assert "_tab_lrp" in src
     # module-scope import would be a line starting at column 0

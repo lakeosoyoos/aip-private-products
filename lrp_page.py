@@ -35,7 +35,7 @@ def _run_pipeline(commodity, vol_pct, rate_pct, lookback, _cache_day):
     r = rate_pct / 100.0
     base_vol = vol_pct / 100.0
     curve = fetch_cme_futures_curve(commodity)
-    # Overnight window (before 9 AM CT) serves yesterday's still-live rates
+    # Overnight window (before 8:25 AM CT) serves yesterday's still-live rates
     lrp, eff_date = fetch_lrp_current(commodity)
     status = "live"
     if lrp.empty:
@@ -64,18 +64,19 @@ def _run_pipeline(commodity, vol_pct, rate_pct, lookback, _cache_day):
 
 
 def _window_status():
-    """LRP sales window: opens ~3:30 PM CT, closes 9:00 AM CT next day."""
+    """LRP sales window: opens ~3:30 PM CT, closes 8:25 AM CT next day."""
     try:
         from zoneinfo import ZoneInfo
     except ImportError:
         from backports.zoneinfo import ZoneInfo
     ct = datetime.now(ZoneInfo("America/Chicago"))
     hm = ct.hour * 60 + ct.minute
+    # 8:25 AM CT close (505 min past midnight) — see lrp_signal.check_window.
     if hm >= 930:
-        left = (24 * 60 - hm) + 540
+        left = (24 * 60 - hm) + 505
         return True, f"open — {left // 60}h {left % 60}m to close"
-    if hm < 540:
-        left = 540 - hm
+    if hm < 505:
+        left = 505 - hm
         return True, f"open — {left // 60}h {left % 60}m to close"
     return False, "closed — opens ~3:30 PM CT"
 
@@ -98,7 +99,7 @@ def render():
                                   key="lrp_vol")
         rate_pct = st.number_input("Risk-free rate %", 0.0, 10.0, 5.0, 0.25,
                                    key="lrp_rate")
-    if top5.button("🔄 Refresh", key="lrp_refresh", use_container_width=True):
+    if top5.button("🔄 Refresh", key="lrp_refresh", width='stretch'):
         _run_pipeline.clear()
         st.rerun()
 
@@ -129,13 +130,13 @@ def render():
     elif status == "expired":
         st.warning(f"**EXPIRED — FOR REFERENCE ONLY.** These are the last "
                    f"posted rates (effective **{eff_date}**); their sales "
-                   f"window closed at 9:00 AM CT and they are no longer "
+                   f"window closed at 8:25 AM CT and they are no longer "
                    f"purchasable. New rates post ~3:30 PM CT on the next "
                    f"sales day. The CME comparison uses today's curve, so "
                    f"the gap will shift when fresh rates arrive.")
     elif eff_date != sales_today():
         st.info(f"Overnight window — showing rates effective "
-                f"**{eff_date}**, purchasable until 9:00 AM CT this "
+                f"**{eff_date}**, purchasable until 8:25 AM CT this "
                 f"morning.")
 
     # ── Headline metrics ─────────────────────────────────────────────────
@@ -178,7 +179,7 @@ def render():
                         if status == "expired" else None)
         fig = build_chart_figure(grid, commodity, spot, cme_source, head,
                                  banner=chart_banner)
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width='stretch')
         import matplotlib.pyplot as plt
         plt.close(fig)
 
@@ -192,7 +193,7 @@ def render():
         show = show[[c for c in cols if c in show.columns]]
         show = show.sort_values("gap", ascending=False)
         st.dataframe(
-            show, use_container_width=True, height=560, hide_index=True,
+            show, width='stretch', height=560, hide_index=True,
             column_config={
                 "weeks": st.column_config.NumberColumn("Tenor (w)"),
                 "coverage_pct": "Coverage",
@@ -304,7 +305,7 @@ def render():
                    "premium_cost", "Feasible", "achievable_ratio"]
         show_sz = show_sz[cols_sz]
         st.dataframe(
-            show_sz, use_container_width=True, height=560,
+            show_sz, width='stretch', height=560,
             hide_index=True,
             column_config={
                 "weeks": st.column_config.NumberColumn("Tenor (w)"),

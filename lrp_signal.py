@@ -870,6 +870,14 @@ def ensure_gap_history(commodity, lookback, r, base_vol, verbose=True):
     return days_ok
 
 
+MIN_BASELINE_GAP_PCT = 0.05
+"""Smallest baseline gap_pct, IN PERCENT, that may be used as a richness denominator.
+
+Observed baselines run 0.06 to 1.37 percent, so 0.05 excludes only cells whose normal gap
+is indistinguishable from zero -- exactly the cells where a ratio is meaningless. Those are
+reported as "no richness" rather than as a large multiple.
+"""
+
 MIN_RICHNESS_BUY = 1.25
 """Richness a cell must reach before BUY is allowed.
 
@@ -939,7 +947,14 @@ def add_history_from_snapshots(grid, commodity, lookback, today_date=None,
         avg_pcts.append(round(float(a["avg_pct"]), 3))
         n_hist.append(int(a["n"]))
         rx = None
-        if float(a["avg_gap"]) >= low_base_floor and abs(a["avg_pct"]) > 0.001:
+        # UNITS. gap_pct is stored as a PERCENT (gap / coverage_price * 100), so a floor of
+        # 0.001 meant one thousandth of one percent -- no floor at all. Richness divides by
+        # this number, so a near-zero baseline produced absurd multiples: observed max was
+        # 228x on real data, against a BUY gate of 1.25. low_base_floor guards avg_gap in
+        # DOLLARS, which is a different quantity from the ratio's denominator and cannot
+        # substitute for it.
+        if (float(a["avg_gap"]) >= low_base_floor
+                and abs(a["avg_pct"]) >= MIN_BASELINE_GAP_PCT):
             rx = round(float(row["gap_pct"]) / float(a["avg_pct"]), 1)
         richness.append(rx)
         buy_ok.append(bool(rx is not None and rx >= min_richness

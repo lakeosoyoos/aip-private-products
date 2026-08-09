@@ -29,6 +29,14 @@ try:
 except Exception:
     drppage = None
 
+# LGM (Livestock Gross Margin, plan 82) page — guarded for the same reason as DRP.
+# src/lgmpage.py pulls in numpy and src/lgm.py's premium engine; if it is missing or
+# raises at import time the LGM tab says so rather than taking every other tab with it.
+try:
+    from src import lgmpage
+except Exception:
+    lgmpage = None
+
 st.set_page_config(
     page_title="AIP Crop-Insurance Catalog",
     page_icon="🌾",
@@ -567,6 +575,10 @@ def _tab_about(mtime: float) -> None:
         "five metric views plus the interval optimizer.\n"
         "- **LRP** — Livestock Risk Protection savings signal.\n"
         "- **DRP** — Dairy Revenue Protection (under construction).\n"
+        "- **LGM** — Livestock Gross Margin: a deductible-ladder calculator. "
+        "Plan 82's subsidy is the only one in this catalog keyed on the "
+        "**deductible** rather than a coverage level, and the filed ladder is "
+        "identical in all 50 states — so this tab is a calculator, not a map.\n"
         "- **About** — this page: grain caveats, counts, and the Excel export."
     )
 
@@ -669,6 +681,35 @@ def _tab_drp() -> None:
     render()
 
 
+# ------------------------------------------------------------------ LGM tab
+def _tab_lgm() -> None:
+    """Livestock Gross Margin — delegates to src/lgmpage.render().
+
+    LGM is the MARGIN leg of the livestock trio (LRP is price, DRP is revenue), and its
+    tab is a DEDUCTIBLE LADDER CALCULATOR rather than a map: plan 82's subsidy is the only
+    one in this catalog keyed on the deductible instead of a coverage level, and the filed
+    ladder is identical in all 50 states, so a choropleth of it would be showing
+    availability rather than a decision.
+
+    Optional and guarded, exactly like _tab_drp: the module is imported defensively at the
+    top of this file so a broken lgmpage cannot break the other five tabs.
+    """
+    st.subheader("🐄 LGM — Livestock Gross Margin (plan 82)")
+    if lgmpage is None:
+        st.info(
+            "The LGM page is not available in this build. Once `src/lgmpage.py` imports "
+            "cleanly, this tab renders it automatically — no change needed here."
+        )
+        return
+    render = getattr(lgmpage, "render", None)
+    if render is None:
+        st.info(
+            "`src/lgmpage.py` is present but does not expose a `render()` function yet."
+        )
+        return
+    render()
+
+
 # -------------------------------------------------------------------- main
 def main() -> None:
     if not _passcode_gate():
@@ -693,7 +734,13 @@ def main() -> None:
     #              (CBV / win rate / return per $1 / return per acre / commission).
     #   LRP      — Livestock Risk Protection savings signal.
     #   DRP      — Dairy Revenue Protection (optional module, see _tab_drp).
-    tabs = st.tabs(["Row Crop", "PRF", "LRP", "DRP", "About"])
+    #   LGM      — Livestock Gross Margin: a deductible-ladder calculator, not a map,
+    #              because plan 82's subsidy keys off the deductible and the ladder is
+    #              national (optional module, see _tab_lgm).
+    #
+    # LGM sits directly after DRP so the three livestock plans — price (LRP), revenue
+    # (DRP), margin (LGM) — read left to right as one group.
+    tabs = st.tabs(["Row Crop", "PRF", "LRP", "DRP", "LGM", "About"])
     with tabs[0]:
         _tab_row_crop(mtime)
     with tabs[1]:
@@ -703,6 +750,8 @@ def main() -> None:
     with tabs[3]:
         _tab_drp()
     with tabs[4]:
+        _tab_lgm()
+    with tabs[5]:
         _tab_about(mtime)
 
 

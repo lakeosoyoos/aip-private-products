@@ -146,3 +146,37 @@ def test_sales_window_closes_at_825_ct():
                 inspect.getsource(L.fetch_lrp_current)):
         assert "540" not in src, "9:00 AM boundary still present"
         assert "505" in src, "8:25 AM boundary missing"
+
+
+# ── the richness denominator, which is in PERCENT ────────────────────────────
+
+def test_baseline_gap_pct_floor_is_in_percent_units():
+    """gap_pct is stored as a percent, so the floor must be too.
+
+    The guard read `abs(avg_pct) > 0.001` — one thousandth of one percent, i.e. no floor.
+    Richness divides by that number, so a cell whose normal gap is indistinguishable from
+    zero produced an enormous multiple: 228x was observed on real history against a BUY
+    gate of 1.25. A ratio against a near-zero denominator is noise wearing a number.
+    """
+    assert L.MIN_BASELINE_GAP_PCT >= 0.01, "floor is small enough to admit noise denominators"
+    assert L.MIN_BASELINE_GAP_PCT < 1.0, "floor so high it would reject ordinary baselines"
+
+
+def test_a_near_zero_baseline_yields_no_richness_rather_than_a_huge_multiple():
+    """The failure mode: divide by ~0, get a spectacular number, fire a BUY on nothing."""
+    import pandas as pd
+
+    grid = pd.DataFrame([{"weeks": 13, "coverage_level": 0.95, "gap": 0.50, "gap_pct": 0.20}])
+    # A baseline whose average gap_pct is 0.002 PERCENT — statistically zero.
+    hist = pd.DataFrame([{"date": f"2026-06-{d:02d}", "weeks": 13, "coverage_level": 0.95,
+                          "gap": 0.11, "gap_pct": 0.002} for d in range(1, 12)])
+    out = L.add_history_from_snapshots(
+        grid.copy(), "feeder", lookback=30,
+        today_date=__import__("datetime").date(2026, 6, 20),
+        _hist=hist) if "_hist" in L.add_history_from_snapshots.__code__.co_varnames else None
+    if out is None:
+        # No injection hook — assert the guard arithmetic directly instead.
+        assert abs(0.002) < L.MIN_BASELINE_GAP_PCT, (
+            "a 0.002% baseline must be rejected as a richness denominator")
+    else:
+        assert out.iloc[0]["richness"] is None

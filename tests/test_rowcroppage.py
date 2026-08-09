@@ -320,8 +320,13 @@ def test_payload_round_trips_through_json(populated):
 # inventing one, and make the THIRD state — basis risk unknown — visible in the legend, the
 # tooltip and the ranking rather than letting it collapse into either of the other two.
 
-def _br(conn, *, fips="31041", crop="Corn", band="ECO95", plan="RP", cov=0.85, miss=0.20,
+# cov defaults to the level the module PUBLISHES, not a literal — see the same fixture in
+# tests/test_rowcropopt.py. A hardcoded level silently stops matching when it moves.
+def _br(conn, *, fips="31041", crop="Corn", band="ECO95", plan="RP", cov=None, miss=0.20,
         grade="A"):
+    if cov is None:
+        from src.rowcropopt import BASIS_COVERAGE_LEVEL
+        cov = BASIS_COVERAGE_LEVEL
     conn.execute(
         "INSERT OR REPLACE INTO basis_risk_county (crop, county_fips, state, county_name, "
         " band, plan_type, coverage_level, n_years, miss_rate, miss_rate_rho_lo, "

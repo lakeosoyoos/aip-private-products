@@ -38,7 +38,10 @@ say "sob_sales: $(rows sob_sales) rows"
 # --- DRP: dimensions + daily prices, then the 5,000-draw Monte Carlo input, then the sweep.
 step "DRP data (2019-2027)"     $PY -m src.drpdata --all --years 2019-2027
 step "DRP draws (RY2026)"       $PY -m src.drpdata --draws --year 2026
-step "DRP optimizer"            $PY -m src.drpopt --all --jobs 4
+# NB: drpopt takes NO --jobs. Its module docstring advertises "--all [--jobs 4]" and
+# that is wrong — passing it aborts the stage on an argparse error, which is exactly
+# what happened on the first overnight run and left drp_opt_best empty.
+step "DRP optimizer"            $PY -m src.drpopt --all
 say "drp_opt_best: $(rows drp_opt_best) rows"
 
 # --- NASS county yields -> the farm-vs-county basis-risk estimator.
@@ -55,8 +58,9 @@ say "cotton unit guard"
 $PY - <<'PYEOF' || say "WARN: cotton unit guard could not run"
 import sqlite3
 c = sqlite3.connect("data/catalog.db")
-row = c.execute("SELECT COUNT(*), AVG(yield_value) FROM nass_county_yield WHERE crop='Cotton'"
-                ).fetchone()
+row = c.execute(
+    "SELECT COUNT(*), AVG(value) FROM nass_county_yield "
+    "WHERE crop='Cotton' AND unit='LB / ACRE'").fetchone()
 n, mean = row[0], row[1] or 0
 # Upland cotton runs ~700-1,100 lb/acre. A NET-PLANTED-ACRE series lands an order of
 # magnitude below that.

@@ -669,11 +669,23 @@ def compute_rows(totals: dict, year: int, top_crops: int = DEFAULT_TOP_CROPS,
 # and a third precomputed table would only be a copy that can go stale against its two parents.
 
 # The slice of basis_risk_county that is published. plan_type 'RP' because the bands are sold
-# overwhelmingly as revenue variants and the RP estimate carries the price leg; coverage_level
-# 0.85 because that is what scripts/analysis/build_basis_risk.py was run at. Both are asserted
-# rather than assumed — load_basis_risk() reports what it actually found.
+# overwhelmingly as revenue variants and the RP estimate carries the price leg.
+#
+# COVERAGE LEVEL 0.75, not 0.85. This was 0.85 only because that is the single level the
+# builder used to be run at, and it turned out to describe a product almost nobody buys:
+# measured from Summary of Business, 2.3% of the acres that bought SCO carry an 0.85 election
+# against 50.7% at 0.75 — roughly one buyer in forty-four.
+#
+# It is not a magnitude error either. SCO exits at the producer's OWN level, so at 0.85 the
+# band is ONE point wide and at 0.65 it is twenty-one; those are different products, not the
+# same product measured differently. Publishing 0.85 over-discounted unclaimed subsidy by
+# $253M of $792M (+11.4%).
+#
+# The builder now produces all five published levels, so this is a free choice rather than
+# the only row available. Do NOT move it to a level the build did not produce: load_basis_risk
+# filters on it exactly, and every county would silently render "unknown".
 BASIS_PLAN_TYPE = "RP"
-BASIS_COVERAGE_LEVEL = 0.85
+BASIS_COVERAGE_LEVEL = 0.75
 
 # band (this module's vocabulary) -> basis_risk_county band variants, PREFERRED FIRST.
 # ECO95 leads ECO90 because 99.0% of RY2026 ECO acres elect the 95% trigger (see the docstring).

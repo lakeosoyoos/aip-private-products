@@ -392,9 +392,16 @@ def test_cli_reports_instead_of_crashing_on_an_empty_db(tmp_path, capsys):
 # the acres never speaks for the county — because those are the failure modes that would look
 # like a working map.
 
-def _br(conn, *, fips="31041", crop="Corn", band="ECO95", plan="RP", cov=0.85,
+def _br(conn, *, fips="31041", crop="Corn", band="ECO95", plan="RP",
+        cov=None,
         miss=0.20, rho_lo_miss=0.30, rho_hi_miss=0.10, deep=0.15, uncov=0.35,
         windfall=0.25, grade="A", n_years=40):
+    # cov defaults to whatever level the module actually PUBLISHES. It used to be hardcoded
+    # 0.85; when the published level moved to 0.75 every fixture row stopped matching and
+    # eleven tests failed at once for a reason that had nothing to do with what they test.
+    if cov is None:
+        from src.rowcropopt import BASIS_COVERAGE_LEVEL
+        cov = BASIS_COVERAGE_LEVEL
     conn.execute(
         "INSERT OR REPLACE INTO basis_risk_county (crop, county_fips, state, county_name, "
         " band, plan_type, coverage_level, n_years, miss_rate, miss_rate_rho_lo, "
@@ -510,15 +517,28 @@ def test_a_crop_outside_corn_soy_wheat_is_unknown_not_defaulted(conn):
 
 
 def test_load_basis_risk_honors_plan_type_and_coverage_level(conn):
+    """Exactly one (plan_type, coverage_level) slice is published, and the loader must take
+    that one and no other. Asserted against the constants rather than against literals, so
+    moving the published level is a one-line change here instead of eleven failures."""
     from src.rowcropopt import BASIS_COVERAGE_LEVEL, BASIS_PLAN_TYPE, load_basis_risk
-    _br(conn, plan="RP", cov=0.85, miss=0.18)
-    _br(conn, plan="YP", cov=0.85, miss=0.90)
-    _br(conn, plan="RP", cov=0.70, miss=0.05)
+
+    other_level = 0.70 if BASIS_COVERAGE_LEVEL != 0.70 else 0.80
+    _br(conn, plan=BASIS_PLAN_TYPE, cov=BASIS_COVERAGE_LEVEL, miss=0.18)   # the one to take
+    _br(conn, plan="YP", cov=BASIS_COVERAGE_LEVEL, miss=0.90)              # wrong plan type
+    _br(conn, plan=BASIS_PLAN_TYPE, cov=other_level, miss=0.05)            # wrong level
     conn.commit()
     index = load_basis_risk(conn)
-    assert BASIS_PLAN_TYPE == "RP" and BASIS_COVERAGE_LEVEL == 0.85
-    assert len(index) == 1
+    assert len(index) == 1, "loader took a slice it should have filtered out"
     assert index[("31041", "Corn", "ECO95")]["miss_rate"] == pytest.approx(0.18)
+
+
+def test_the_published_coverage_level_is_one_the_builder_actually_produces():
+    """A level the build never produced makes EVERY county render 'unknown' — silently, since
+    a missing row is indistinguishable from an unmeasured county."""
+    from src.basisrisk import PUBLISHED_COVERAGE_LEVELS
+    from src.rowcropopt import BASIS_COVERAGE_LEVEL
+
+    assert BASIS_COVERAGE_LEVEL in PUBLISHED_COVERAGE_LEVELS
 
 
 def test_a_missing_basis_table_is_unknown_everywhere_not_an_exception():

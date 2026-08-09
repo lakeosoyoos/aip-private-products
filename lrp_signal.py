@@ -65,6 +65,18 @@ CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lrp_cache"
 GAP_HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "lrp_gap_history.csv")
 
+# Set LRP_HISTORY_READONLY=1 to make every gap-history write a no-op.
+#
+# WHY THIS EXISTS: the LRP page records a snapshot and backfills history as a SIDE EFFECT of
+# rendering. That is correct in the app and wrong everywhere else — a headless render under
+# pytest grew this file from 1,954 to 5,515 rows, silently moving the baseline that the BUY
+# threshold is calibrated against. A test run must not be able to change a production
+# calibration. tests/conftest.py sets this for the whole suite.
+#
+# It guards the WRITE, not the callers, so a new caller cannot forget it.
+def _history_readonly() -> bool:
+    return os.environ.get("LRP_HISTORY_READONLY", "").strip().lower() in {"1", "true", "yes"}
+
 TENORS_WEEKS    = [13, 17, 21, 26, 30, 34, 39, 43, 47, 52]
 # The twelve levels RMA actually publishes in the daily livestock rate file. Verified
 # against lrp_cache/lrp_feeder_2026-07-15.csv, whose distinct coverage_level values are
@@ -743,6 +755,8 @@ def record_gap_snapshot(grid, commodity, snap_date, source="live"):
     day replaces that day's rows. This file is the richness baseline — it is
     never re-priced.
     """
+    if _history_readonly():
+        return 0
     live = grid[grid["live"]] if "live" in grid.columns else grid
     if live.empty:
         return 0

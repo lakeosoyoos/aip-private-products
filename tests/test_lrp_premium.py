@@ -180,3 +180,39 @@ def test_a_near_zero_baseline_yields_no_richness_rather_than_a_huge_multiple():
             "a 0.002% baseline must be rejected as a richness denominator")
     else:
         assert out.iloc[0]["richness"] is None
+
+
+# ── the suite must not mutate production data ────────────────────────────────
+
+def test_the_readonly_guard_is_active_during_tests():
+    """tests/conftest.py sets this for the whole session. If it ever stops being set, a
+    headless render will start writing to lrp_gap_history.csv again."""
+    assert L._history_readonly() is True
+
+
+def test_recording_a_snapshot_is_a_no_op_while_readonly(tmp_path, monkeypatch):
+    """The guard is on the WRITE, not on the callers, so a new caller cannot forget it."""
+    import pandas as pd
+
+    target = tmp_path / "hist.csv"
+    monkeypatch.setattr(L, "GAP_HISTORY_FILE", str(target))
+    grid = pd.DataFrame([{"live": True, "weeks": 13, "coverage_level": 0.95,
+                          "coverage_price": 300.0, "F": 320.0, "producer_prem": 5.0,
+                          "cme_put": 9.0, "gap": 4.0, "gap_pct": 1.3}])
+    written = L.record_gap_snapshot(grid, "feeder", __import__("datetime").date(2026, 8, 8))
+    assert written == 0
+    assert not target.exists(), "a test run wrote to the gap history"
+
+
+def test_the_write_still_works_when_not_readonly(tmp_path, monkeypatch):
+    """The guard must be a switch, not a permanent disablement — the app depends on it."""
+    import pandas as pd
+
+    monkeypatch.delenv("LRP_HISTORY_READONLY", raising=False)
+    target = tmp_path / "hist.csv"
+    monkeypatch.setattr(L, "GAP_HISTORY_FILE", str(target))
+    grid = pd.DataFrame([{"live": True, "weeks": 13, "coverage_level": 0.95,
+                          "coverage_price": 300.0, "F": 320.0, "producer_prem": 5.0,
+                          "cme_put": 9.0, "gap": 4.0, "gap_pct": 1.3}])
+    assert L.record_gap_snapshot(grid, "feeder", __import__("datetime").date(2026, 8, 8)) == 1
+    assert target.exists()

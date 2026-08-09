@@ -194,10 +194,22 @@ src/connectors/rma_sob.py's docstring predicted.  It is dropped one filter later
 ``sob_crop()`` returns None and ``canonical_records()`` skips the row.  See
 ``SOB_GATE_NOTE`` below for the exact change that file needs.
 
-What is NOT recoverable even after that change: sobtpu publishes ``Coverage Level`` as
-``.0000`` for every plan-82 row from crop year 2008 forward, so realized loss ratio BY
-DEDUCTIBLE does not exist in any public file.  Deductible-level economics in this module
-are therefore forward-looking (computed off RMA's rate draws), never backtested.
+sobtpu publishes ``Coverage Level`` as ``.0000`` for every plan-82 row from crop year 2008
+forward, so realized loss ratio BY DEDUCTIBLE cannot come from the Summary of Business.
+That is not the same as unbacktestable, which this docstring used to claim: ADM ``A00600
+LgmGrossMargin`` publishes Month2..Month11 ACTUAL Gross Margin Amount beside the expected
+columns, back-filled once each marketing month settles, so the indemnity at every filed
+deductible is arithmetic -- ``MAX(0, expected - deductible - actual)`` -- with no modelling.
+``src/lgmbacktest.py`` does that for RY2022-RY2026, the span whose A00600 carries a Sales
+Effective Date.
+
+Deductible economics in THIS module remain forward-looking: they price the policy the way an
+AIP's system does, off RMA's rate draws. The measured counterpart lives in lgmbacktest, and
+the two disagree in a way that matters -- swine's $10/head optimum survives measurement,
+LGM-Dairy's sits below $1.00/cwt, and LGM-Cattle paid nothing at any deductible of $60 or
+more across five reinsurance years. All of it rests on 6-11 NON-OVERLAPPING observations
+(margins are national, so 50 states is one observation, and consecutive monthly periods share
+nine of ten marketing months), so only the swine result is stable enough to act on.
 
 CLI:
     .venv/bin/python -m src.lgm --subsidy --year 2027

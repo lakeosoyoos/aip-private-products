@@ -456,10 +456,31 @@ def test_head_to_head_prose_admits_the_deductible_blend():
 # Honesty text that must not quietly disappear
 # ---------------------------------------------------------------------------
 
-def test_forward_looking_note_says_it_cannot_be_backtested():
-    assert "cannot be backtested" in lgmpage.FORWARD_LOOKING_NOTE
-    assert ".0000" in lgmpage.FORWARD_LOOKING_NOTE
-    assert "sobtpu" in lgmpage.FORWARD_LOOKING_NOTE
+def test_the_page_no_longer_claims_the_ladder_cannot_be_backtested():
+    """This test used to assert the OPPOSITE, and the assertion was wrong.
+
+    sobtpu really does report Coverage Level as .0000 for every plan-82 row, so realized
+    loss ratio by deductible is absent from the Summary of Business. But that is one file,
+    not the world: ADM A00600 publishes actual gross margins beside expected ones, so the
+    indemnity at every rung is arithmetic. The page must not tell a producer a number is
+    unknowable when it has been measured two sections further down.
+    """
+    note = lgmpage.FORWARD_LOOKING_NOTE
+    assert "cannot be backtested" not in note
+    assert ".0000" in note and "sobtpu" in note, "the real sobtpu limitation still applies"
+    assert "A00600" in note, "must point at the file that CAN answer it"
+
+
+def test_the_measured_result_is_on_the_page_and_contradicts_the_model():
+    """The forward ladder recommends $70/head for cattle. Measured over five reinsurance
+    years, that rung paid nothing. Showing the model without the measurement would leave a
+    recommendation standing that the data refutes."""
+    note = lgmpage.BACKTEST_NOTE
+    assert "A00600" in note
+    for must in ("Swine", "Dairy", "Cattle"):
+        assert must in note
+    assert "6–11" in note or "6-11" in note, "the sample size must travel with the result"
+    assert "national" in note, "50 states being one observation is the reason it is 6-11"
 
 
 def test_spread_note_refuses_to_treat_the_optimum_as_a_constant():

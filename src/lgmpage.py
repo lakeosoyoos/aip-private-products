@@ -180,12 +180,37 @@ POOLED_NOTE = (
     "and to a {be:.2%} expected loss."
 )
 
+# REPLACES an earlier note reading "This table is forward-looking and cannot be backtested."
+# The premise was right and the conclusion wrong: sobtpu genuinely reports Coverage Level as
+# .0000 for every plan-82 row, but the Summary of Business is the wrong file. ADM A00600
+# publishes Month2..Month11 ACTUAL Gross Margin alongside the expected columns, back-filled
+# after each marketing month settles, so the indemnity at every filed deductible is
+# arithmetic. src/lgmbacktest.py does exactly that. Leaving "cannot be backtested" standing
+# next to a backtest would be worse than either sentence alone.
 FORWARD_LOOKING_NOTE = (
-    "**This table is forward-looking and cannot be backtested.** It runs RMA's published "
-    "Steps 1–7 against RMA's own published margin draws, which is how an AIP's system "
-    "prices the policy — but realized loss ratio **by deductible** does not exist in any "
-    "public file: `sobtpu` reports `Coverage Level` as `.0000` for every plan-82 row from "
-    "crop year 2008 forward. Nothing below is an observed outcome."
+    "**This table is a forward-looking price, not an observed outcome.** It runs RMA's "
+    "published Steps 1–7 against RMA's own margin draws — how an AIP's system actually "
+    "prices the policy. Realized loss ratio *by deductible* is absent from the Summary of "
+    "Business (`sobtpu` reports `Coverage Level` as `.0000` for every plan-82 row), but it "
+    "**can** be reconstructed from ADM `A00600`, which publishes actual gross margins "
+    "alongside expected ones. See the measured results immediately below."
+)
+
+BACKTEST_NOTE = (
+    "**Measured against realized margins, RY2022–RY2026.** Reconstructed from ADM `A00600`'s "
+    "actual gross margins — no modelling, just `MAX(0, expected − deductible − actual)`.\n\n"
+    "* **Swine — the forward optimum holds.** $10/head wins in every sub-window tested.\n"
+    "* **Dairy — the optimum sits BELOW $1.00/cwt** ($0.10–$0.80 depending on window). The "
+    "rated model assumes the loss ratio is flat at 1/1.03 across the ladder; measured, it "
+    "falls from 1.17 at $0 to 0.53 at $2.00.\n"
+    "* **Cattle — every rung lost money, and the $70 rung paid NOTHING.** LGM-Cattle produced "
+    "no indemnity at any deductible of $60/head or more across five reinsurance years.\n\n"
+    "**Read that against its sample.** LGM margins are *national*, so all 50 states are ONE "
+    "observation, and consecutive monthly periods share nine of their ten marketing months — "
+    "leaving only **6–11 non-overlapping observations** per commodity. Swine is stable across "
+    "sub-windows. Dairy's direction is robust but its level is not. The cattle result "
+    "describes the extraordinary 2021–2026 cattle-margin regime, not how LGM-Cattle is rated "
+    "in general."
 )
 
 SPREAD_NOTE = (
@@ -995,6 +1020,7 @@ def _render_ladder(st) -> None:
     # keeps two decimals of the raw rate on purpose — 0.18 / 0.50 is how the ADM files
     # it, and matching the source makes the table checkable against A00070.
     st.info(FORWARD_LOOKING_NOTE)
+    st.warning(BACKTEST_NOTE)
 
     # ------------------------------------------- 2. why the peak is interior
     st.markdown("#### Why the peak is interior")

@@ -52,7 +52,7 @@ def _grid_county(conn, grid_id, county_fips, county_name="X", state="WA"):
         "VALUES (?,?,?,?,?)", (grid_id, state, county_fips, county_name, "synthetic"))
 
 
-def _opt(conn, grid_id, use="Grazing", cov=0.9, *, win=None, win_combo=None,
+def _opt(conn, grid_id, use="Grazing", cov=0.9, *, max_pct=60, win=None, win_combo=None,
          win_props=None, win_net=None, net=None, net_combo=None, net_props=None,
          net_win=None, median_net=None, pct_positive=None,
          win_rate_sum=None, net_rate_sum=None):
@@ -63,7 +63,7 @@ def _opt(conn, grid_id, use="Grazing", cov=0.9, *, win=None, win_combo=None,
         "best_net_win_rate, median_net, pct_positive, best_win_rate_sum, "
         "best_net_rate_sum, top_json, source, fetched_at) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (grid_id, use, cov, 60, 2006, 2025, 59536, win,
+        (grid_id, use, cov, max_pct, 2006, 2025, 59536, win,
          json.dumps(win_combo) if isinstance(win_combo, list) else win_combo,
          json.dumps(win_props) if isinstance(win_props, list) else win_props,
          win_net, net,
@@ -937,3 +937,43 @@ def test_the_two_stored_policies_really_do_differ(merged):
         pytest.skip("no swept rows in this fixture")
     differ = sum(1 for w, nw in rows if abs(w - nw) > 1e-9)
     assert differ, "expected the win-maximiser and net-maximiser to differ on some grids"
+
+
+def test_a_county_gets_the_row_swept_under_its_own_cap(conn):
+    """prf_opt_best is keyed by max_pct, so a grid straddling a cap boundary contributes more
+    than one row for the same use and coverage. The county must receive the row matching ITS
+    cap — otherwise whichever row the loop happens to process last wins, and a 40%-cap county
+    can be shown an allocation that is only legal in the 50%-cap county next door.
+    """
+    _grid_county(conn, 1, "48001", "Anderson", state="TX")
+    _grid_county(conn, 1, "48003", "Andrews", state="TX")
+    conn.execute("CREATE TABLE IF NOT EXISTS prf_max_pct (state_code TEXT, county_code TEXT, "
+                 "max_pct INTEGER)")
+    conn.executemany("INSERT INTO prf_max_pct VALUES (?,?,?)",
+                     [("48", "001", 40), ("48", "003", 50)])
+    # the SAME grid, swept once per cap, with deliberately different winners
+    # NOTE a 40% cap forbids a two-interval policy outright: 2 x 40 < 100. The cheapest
+    # legal allocation there is three intervals, which is itself a real consequence of the
+    # cap and not just test scaffolding.
+    _opt(conn, grid_id=1, max_pct=40, net=0.070,
+         net_combo=["FEB-MAR", "JUN-JUL", "SEP-OCT"], net_props=[40, 40, 20])
+    _opt(conn, grid_id=1, max_pct=50, net=0.099, net_combo=["FEB-MAR", "AUG-SEP"],
+         net_props=[50, 50])
+    conn.commit()
+
+    payload = build_opt_payload(conn)
+    detail = payload["grid_detail"]
+    pols = payload["policies"]
+
+    def props_for(fips):
+        cell = payload["counties"][fips]["Grazing"]["0.9"]
+        d = detail[cell["g"][0]]
+        return cell["net"], pols[d["np"]][1]
+
+    assert props_for("48001") == (0.07, [40, 40, 20]), "40%-cap county took the wrong row"
+    assert props_for("48003") == (0.099, [50, 50]), "50%-cap county took the wrong row"
+    # and neither county sees an allocation exceeding its own cap
+    for fips, cap in (("48001", 40), ("48003", 50)):
+        cell = payload["counties"][fips]["Grazing"]["0.9"]
+        for di in cell["g"]:
+            assert max(pols[detail[di]["np"]][1]) <= cap

@@ -522,6 +522,20 @@ def build_opt_payload(conn: sqlite3.Connection) -> dict:
     except sqlite3.OperationalError:
         rows = []
 
+    # The county's actuarial maximum percent of value. prf_opt_best is keyed by max_pct
+    # because a grid straddling a cap boundary has two legal policy universes and therefore
+    # two different best policies; this is what decides WHICH of those rows belongs to a given
+    # county. Without it the last row processed would win, arbitrarily, and a Texas county
+    # under a 40% cap could be shown an allocation legal only in a 50% county next door.
+    county_cap: dict[str, int] = {}
+    try:
+        for fips, cap in conn.execute(
+                "SELECT state_code || county_code, MIN(max_pct) FROM prf_max_pct "
+                "GROUP BY state_code, county_code"):
+            county_cap[str(fips)] = int(cap)
+    except sqlite3.OperationalError:
+        pass                       # pre-cap DB: every row carries the same max_pct
+
     counties: dict = {}
     uses: set[str] = set()
     coverages: set[str] = set()
@@ -568,7 +582,14 @@ def build_opt_payload(conn: sqlite3.Connection) -> dict:
         }
         di = len(grid_detail)
         grid_detail.append(detail)
+        row_cap = _col(r, "max_pct")
         for fips in fipses:
+            # Only the row swept under THIS county's cap describes a policy this county's
+            # producers can actually buy. Grids with a single cap are unaffected; the 617 that
+            # straddle a boundary contribute a different row to each side.
+            want = county_cap.get(str(fips))
+            if want is not None and row_cap is not None and int(row_cap) != want:
+                continue
             cell = (counties
                     .setdefault(fips, {})
                     .setdefault(use, {})

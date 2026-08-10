@@ -298,3 +298,34 @@ def test_solve_interval_values_recovers_truth():
     solved = solve_interval_values(wb)
     for iv in INTERVALS:
         assert math.isclose(solved[iv], truth[iv], abs_tol=1e-9)
+
+
+def test_the_five_percent_grid_contains_every_vertex_of_the_feasible_set():
+    """Why STEP_PCT stays at 5 even though producers may write any percentage.
+
+    average_net_return is linear in the allocation vector, so its maximum sits at a vertex of
+    {sum p = 100, MIN_PCT <= p_i <= cap}. A vertex pins all but one coordinate to a bound, so
+    the free coordinate is 100 - (a sum of bounds). If MIN_PCT and every cap are multiples of
+    5, that remainder is a multiple of 5 and the 5% grid already contains the optimum — a
+    finer search cannot beat it, only cost 168x more.
+
+    This test pins the PRECONDITION. If a future actuarial year introduces a cap that is not a
+    multiple of 5 (or MIN_PCT moves), the argument breaks and the step must be revisited.
+    """
+    from src.prfopt import MIN_PCT, STEP_PCT
+
+    assert MIN_PCT % STEP_PCT == 0
+    for cap in (40, 45, 50, 60, 70):          # the RY2026 actuarial caps
+        assert cap % STEP_PCT == 0, f"cap {cap} is not a multiple of the {STEP_PCT}% step"
+    assert 100 % STEP_PCT == 0
+
+
+def test_two_percent_is_not_a_usable_step():
+    """Not a preference — enumerate_policies asserts the cap divides by the step, and the
+    45% cap (Nebraska) is odd. Recorded so the option is not re-proposed."""
+    import pytest
+
+    from src.prfopt import enumerate_policies
+
+    with pytest.raises(AssertionError):
+        enumerate_policies(step=2, max_pct=45)

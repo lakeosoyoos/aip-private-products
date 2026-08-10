@@ -129,6 +129,27 @@ INTERVAL_INDEX: Dict[str, int] = {m: i for i, m in enumerate(INTERVALS)}
 
 MIN_INTERVALS = 2
 MAX_INTERVALS = 5
+# WHY 5 AND NOT FINER. The allocation step is OUR search granularity, not RMA's rule: the
+# Rainfall Index handbook states no increment, and producers can write any percentage. It
+# stays at 5 because finer cannot help the return metric and only overfits the win rate.
+#
+# average_net_return is exactly LINEAR in the allocation vector (see the calibration block
+# above: max abs residual 4.4e-14 over 59,536 rows). A linear objective over the feasible set
+# {sum p = 100, MIN_PCT <= p_i <= cap} is maximised at a VERTEX, and every vertex has all but
+# one coordinate pinned to a bound. MIN_PCT is 10 and every actuarial cap is a multiple of 5
+# (40/45/50/60/70), so the free coordinate is a multiple of 5 too -- the 5% grid already
+# CONTAINS every vertex. No finer step can ever find a better return. Measured, not assumed:
+# a 1% search over the same grids returns bit-identical best_net on all of them.
+#
+# Win rate is a step function, not linear, so a finer search CAN move it. On one grid of six
+# tested it did -- by exactly 1/19, one single year flipping positive, from re-weighting
+# 35/25/40 to 36/24/24/16. That is the smallest representable increment and it is fitted to
+# the same 20 years being scored. Buying it costs a 168x larger universe (53,203 -> 8,923,487
+# allocations per row) and a rewrite of the enumerator and scorer off pandas onto chunked
+# numpy, since 8.9M Python tuples per grid will not fit.
+#
+# Also note 2% is not merely undesirable but IMPOSSIBLE here: enumerate_policies requires the
+# cap to be divisible by the step, and Nebraska's cap is 45%. Only 5 and 1 divide all five.
 STEP_PCT = 5
 MIN_PCT = 10
 MAX_PCT = 60

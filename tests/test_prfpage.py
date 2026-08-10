@@ -883,30 +883,39 @@ def test_fixed_unit_quantities_never_go_through_the_metric_dependent_formatter(m
         )
 
 
-def test_the_grid_tooltip_prints_its_win_rate_as_a_percentage(merged):
-    """The grid tooltip's win rate must go through fmtWin, so it reads as a percentage under
-    every metric selection rather than picking up the selected metric's dollar units."""
-    html = render_prf_page_html(build_prf_page_payload(merged),
-                                d3_js="", topojson_js="", atlas={})
-    assert "fmtWin(rate)" in html, "the grid tooltip's win rate must be percentage-formatted"
+def test_every_reported_figure_comes_from_one_policy(merged):
+    """policyFor() is the single place that decides WHICH stored policy a tooltip is talking
+    about, and it returns that policy's win rate, its return and its intervals together.
 
-
-def test_a_win_rate_is_reported_for_the_allocation_shown_beside_it(merged):
-    """Each grid stores TWO policies — the win-rate maximiser and the net maximiser — and they
-    are usually different allocations with different win rates.
-
-    The grid tooltip printed gd.win (the BEST-WIN policy's rate) next to gd.np (the BEST-NET
-    policy's intervals). On grid 25032 that read "best win 78.9%" against an allocation whose
-    real win rate is 47.4% — 31 points of overstatement on the policy the map recommends.
-
-    The rule: whichever policy's intervals are shown, its OWN win rate goes with them.
+    That structure is the fix for two separate defects. The grid tooltip printed the best-WIN
+    policy's rate next to the best-NET policy's intervals (grid 25032 at 70%: 78.9% shown for
+    an allocation that actually wins 47.4%). And neither tooltip followed the metric selector,
+    so choosing "Best win rate" still described the net-maximising policy.
     """
     html = render_prf_page_html(build_prf_page_payload(merged),
                                 d3_js="", topojson_js="", atlas={})
-    assert "var showNet = gd.np !== undefined;" in html
-    assert "var rate = showNet ? gd.net_win : gd.win;" in html
-    # the mispairing must not come back
-    assert "fmtWin(gd.win) +\n           ' &middot; ' + esc(comboStr(gd.np" not in html
+    assert "function policyFor(gd)" in html
+    # the selection decides which policy, not whether one happens to be stored
+    assert 'var wantWin = (metric === "win");' in html
+    # rate and intervals leave policyFor together, so they cannot be mismatched by a caller
+    assert "win:  wantWin ? gd.win : gd.net_win," in html
+    assert "pol:  pol," in html
+    # and no caller reaches around it for the raw fields
+    for bad in ("fmtWin(gd.win)", "comboStr(gd.np", "comboStr(gr.wp)", "comboStr(gr.np)"):
+        assert bad not in html, f"{bad} bypasses policyFor and can mispair"
+
+
+def test_both_win_rate_and_return_are_shown_whichever_metric_is_selected(merged):
+    """The selected quantity leads, but both are always present: a win rate without its
+    return, or a return without the odds of getting it, is half an answer either way."""
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    assert "function policyLine(gd, cbv)" in html
+    assert 'fmtWin(p.win), fmtNet(p.net) + " per $1"' in html          # win selected
+    assert 'fmtNet(p.net) + " per $1", fmtWin(p.win) + " of years"' in html   # dollars selected
+    assert "fmtAcre(acre)" in html                                      # per-acre in both
+    # fmtAcre already ends in "/ac"; appending another gave "$4.43/ac/ac" on the win view
+    assert 'fmtAcre(acre) + "/ac"' not in html
 
 
 def test_the_two_stored_policies_really_do_differ(merged):

@@ -1452,6 +1452,47 @@ var DATA = __PAYLOAD__;
       return iv + " " + pct;
     }).join(" · ");
   }
+  // WHICH of the two stored policies the current selection is asking about.
+  //
+  // The optimiser maximises win rate and net return SEPARATELY, so a grid has no single
+  // "recommended policy" — it has two, and they are usually different allocations with
+  // different win rates and different returns. Which one you want depends entirely on what
+  // you selected: looking at the win-rate map you want the allocation that wins most often;
+  // looking at a dollar map you want the one that returns most. Reporting the wrong one, or
+  // mixing halves of both, is what made these tooltips read as nonsense.
+  //
+  // Returns every figure for ONE policy, so a caller cannot pair a rate with the wrong
+  // intervals: its win rate, its net per $1, its allocation, and what to call it. Falls back
+  // to the other policy if the wanted one was not stored for this grid.
+  function policyFor(gd) {
+    if (!gd) return null;
+    var wantWin = (metric === "win");
+    var pol = wantWin ? gd.wp : gd.np;
+    if (pol === undefined || pol === null) {   // not stored — fall back rather than blank out
+      wantWin = !wantWin;
+      pol = wantWin ? gd.wp : gd.np;
+    }
+    if (pol === undefined || pol === null) return null;
+    return {
+      win:  wantWin ? gd.win : gd.net_win,
+      net:  wantWin ? gd.win_net : gd.net,
+      pol:  pol,
+      kind: wantWin ? "best win rate" : "best return"
+    };
+  }
+  // One policy's numbers, in the order the selection cares about: the selected quantity
+  // first. Both are always shown — a win rate without its return, or a return without the
+  // odds of getting it, is half an answer either way.
+  function policyLine(gd, cbv) {
+    var p = policyFor(gd);
+    if (!p) return null;
+    var acre = acreFrom(p.net, cbv);
+    var bits = (metric === "win")
+      ? [fmtWin(p.win), fmtNet(p.net) + " per $1"]
+      : [fmtNet(p.net) + " per $1", fmtWin(p.win) + " of years"];
+    if (acre !== null) bits.splice(metric === "win" ? 2 : 1, 0, fmtAcre(acre));  // carries /ac
+    return p.kind + ": " + bits.join(" &middot; ") + " &mdash; " + esc(comboStr(p.pol));
+  }
   function selLabel() {
     var s = esc(fUse.value);
     if (METRICS[metric].needsOpt && coverage !== null) s += " @ " + covLabel(coverage) + " coverage";
@@ -1541,19 +1582,12 @@ var DATA = __PAYLOAD__;
     cell.g.slice(0, 5).forEach(function (ix) {
       var gr = OPT.grid_detail[ix];
       h += '<div class="t-grid"><div class="t-gid">Grid ' + esc(gr.grid) + '</div>';
-      if (gr.win !== null && gr.win !== undefined) {
-        h += '<div class="t-line">win-rate best: ' + fmtWin(gr.win) + ' &middot; net ' +
-             fmtNet(gr.win_net) + ' &mdash; ' + esc(comboStr(gr.wp)) + '</div>';
-      }
-      if (gr.net !== null && gr.net !== undefined) {
-        h += '<div class="t-line">net best: ' + fmtNet(gr.net) + ' &middot; win ' +
-             fmtWin(gr.net_win);
-        if (metric === "acre") {
-          var ga = acreFrom(gr.net, cbv);
-          if (ga !== null) h += ' &middot; ' + fmtAcre(ga);
-        }
-        h += ' &mdash; ' + esc(comboStr(gr.np)) + '</div>';
-      }
+      // The policy the SELECTION is asking about, with its own win rate and its own return.
+      // This used to list BOTH stored policies on every grid: twice the reading for one
+      // answer, and an invitation to pair a rate off one line with intervals off the other —
+      // which is exactly the mistake the grid tooltip made.
+      var gline = policyLine(gr, cbv);
+      if (gline !== null) h += '<div class="t-line">' + gline + '</div>';
       h += '</div>';
     });
     if (n > 5) h += '<div class="t-more">+' + (n - 5) + ' more grids</div>';
@@ -1705,22 +1739,10 @@ var DATA = __PAYLOAD__;
       h += '<div class="t-line">County Base Value is published per COUNTY, so every grid ' +
            'in this county shares it.</div>';
     } else if (gd) {
-      // The win rate MUST come from the same allocation as the intervals beside it. Two
-      // different policies are stored per grid — the one that maximises win rate and the one
-      // that maximises net — and they are usually not the same policy. This line used to
-      // print gd.win (the BEST-WIN policy's rate) next to gd.np (the BEST-NET policy's
-      // intervals): on grid 25032 that read "best win 78.9%" against a two-interval
-      // allocation whose actual win rate is 47.4%, overstating it by 31 points and making
-      // the recommended policy look far safer than it is. The county tooltip always paired
-      // these correctly; only this line did not.
-      //
-      // fmtWin rather than fmtShort for the second reason: fmtShort formats in the SELECTED
-      // metric's units, so a win rate rendered as "$0.789" under every dollar metric.
-      var showNet = gd.np !== undefined;
-      var pol = showNet ? gd.np : gd.wp;
-      var rate = showNet ? gd.net_win : gd.win;
-      h += '<div class="t-line">' + (showNet ? "wins " : "best win ") + fmtWin(rate) +
-           ' &middot; ' + esc(comboStr(pol)) + '</div>';
+      // One policy, chosen by the selection, every figure taken from it. See policyFor().
+      var line = policyLine(gd, cbvFor(fips));
+      h += '<div class="t-line">' + (line === null ? "no stored policy for this grid" : line) +
+           '</div>';
     } else {
       h += '<div class="t-line">No swept result for this grid at the current selection.</div>';
     }

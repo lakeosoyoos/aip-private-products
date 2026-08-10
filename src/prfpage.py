@@ -1705,14 +1705,22 @@ var DATA = __PAYLOAD__;
       h += '<div class="t-line">County Base Value is published per COUNTY, so every grid ' +
            'in this county shares it.</div>';
     } else if (gd) {
-      // fmtWin, NOT fmtShort. fmtShort formats according to the SELECTED metric, which is
-      // right for the value on the line above (that value IS the selected metric) and wrong
-      // here: gd.win is a win RATE whatever the map is currently showing. Through fmtShort a
-      // 62% win rate printed as "$0.62" under $/acre, $/1 and commission, and as "$1" under
-      // CBV — correct-looking, wrongly denominated, and only accidentally right when the
-      // selected metric happened to be win.
-      h += '<div class="t-line">best win ' + fmtWin(gd.win) +
-           ' &middot; ' + esc(comboStr(gd.np !== undefined ? gd.np : gd.wp)) + '</div>';
+      // The win rate MUST come from the same allocation as the intervals beside it. Two
+      // different policies are stored per grid — the one that maximises win rate and the one
+      // that maximises net — and they are usually not the same policy. This line used to
+      // print gd.win (the BEST-WIN policy's rate) next to gd.np (the BEST-NET policy's
+      // intervals): on grid 25032 that read "best win 78.9%" against a two-interval
+      // allocation whose actual win rate is 47.4%, overstating it by 31 points and making
+      // the recommended policy look far safer than it is. The county tooltip always paired
+      // these correctly; only this line did not.
+      //
+      // fmtWin rather than fmtShort for the second reason: fmtShort formats in the SELECTED
+      // metric's units, so a win rate rendered as "$0.789" under every dollar metric.
+      var showNet = gd.np !== undefined;
+      var pol = showNet ? gd.np : gd.wp;
+      var rate = showNet ? gd.net_win : gd.win;
+      h += '<div class="t-line">' + (showNet ? "wins " : "best win ") + fmtWin(rate) +
+           ' &middot; ' + esc(comboStr(pol)) + '</div>';
     } else {
       h += '<div class="t-line">No swept result for this grid at the current selection.</div>';
     }

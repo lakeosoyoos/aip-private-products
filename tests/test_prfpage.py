@@ -884,7 +884,39 @@ def test_fixed_unit_quantities_never_go_through_the_metric_dependent_formatter(m
 
 
 def test_the_grid_tooltip_prints_its_win_rate_as_a_percentage(merged):
-    """The specific regression: the grid tooltip's 'best win' must go through fmtWin."""
+    """The grid tooltip's win rate must go through fmtWin, so it reads as a percentage under
+    every metric selection rather than picking up the selected metric's dollar units."""
     html = render_prf_page_html(build_prf_page_payload(merged),
                                 d3_js="", topojson_js="", atlas={})
-    assert "best win ' + fmtWin(gd.win)" in html
+    assert "fmtWin(rate)" in html, "the grid tooltip's win rate must be percentage-formatted"
+
+
+def test_a_win_rate_is_reported_for_the_allocation_shown_beside_it(merged):
+    """Each grid stores TWO policies — the win-rate maximiser and the net maximiser — and they
+    are usually different allocations with different win rates.
+
+    The grid tooltip printed gd.win (the BEST-WIN policy's rate) next to gd.np (the BEST-NET
+    policy's intervals). On grid 25032 that read "best win 78.9%" against an allocation whose
+    real win rate is 47.4% — 31 points of overstatement on the policy the map recommends.
+
+    The rule: whichever policy's intervals are shown, its OWN win rate goes with them.
+    """
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    assert "var showNet = gd.np !== undefined;" in html
+    assert "var rate = showNet ? gd.net_win : gd.win;" in html
+    # the mispairing must not come back
+    assert "fmtWin(gd.win) +\n           ' &middot; ' + esc(comboStr(gd.np" not in html
+
+
+def test_the_two_stored_policies_really_do_differ(merged):
+    """Guards the premise. If best-win and best-net always coincided the pairing would not
+    matter, and this test would be the place that says so."""
+    rows = merged.execute(
+        "SELECT best_win_rate, best_net_win_rate FROM prf_opt_best "
+        "WHERE best_win_rate IS NOT NULL AND best_net_win_rate IS NOT NULL").fetchall()
+    if not rows:
+        import pytest
+        pytest.skip("no swept rows in this fixture")
+    differ = sum(1 for w, nw in rows if abs(w - nw) > 1e-9)
+    assert differ, "expected the win-maximiser and net-maximiser to differ on some grids"

@@ -412,6 +412,11 @@ def build_rowcrop_page_payload(conn: sqlite3.Connection, year=None,
             "crop_note": BASIS_CROP_NOTE,
             # Travels with every basis figure — the widened rho floor is otherwise invisible.
             "optimism_note": BASIS_OPTIMISM_NOTE,
+            # The sensitivity band itself, so the tooltip can LABEL the range it already
+            # prints values for. It used to read "rho 0.55-0.85" as literal text beside
+            # numbers computed at whatever RHO_LO/RHO_HI actually were — wrong and plausible
+            # for as long as nobody compared the two.
+            "rho_ref": B.RHO_REF, "rho_lo": B.RHO_LO, "rho_hi": B.RHO_HI,
         },
         "county_states": states,
         "county_names": _county_names(conn),
@@ -1975,6 +1980,15 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .county.focused { stroke: var(--ink); stroke-width: 1.1; }
   .focusline { fill: none; stroke: var(--ink); stroke-width: 2.2; stroke-linejoin: round;
                pointer-events: none; vector-effect: non-scaling-stroke; }
+  /* Hover readout — a dedicated top-most outline, NOT a stroke on the hovered shape. A
+     county's border is SHARED with its neighbours, and in SVG whichever sibling is drawn
+     later paints over it, so styling the shape gives an outline whole on some edges and
+     erased on others. The pale casing under the dark line keeps it legible at both ends of
+     the ramp; non-scaling so it does not thin out as you drill in. */
+  .hovercase { fill: none; stroke: var(--surface); stroke-width: 3.4; stroke-linejoin: round;
+               pointer-events: none; vector-effect: non-scaling-stroke; opacity: 0.85; }
+  .hoverline { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-linejoin: round;
+               pointer-events: none; vector-effect: non-scaling-stroke; }
   #tooltip {
     position: absolute; pointer-events: none; display: none; z-index: 5;
     background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
@@ -2208,7 +2222,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <b>TYPICAL</b> farm in the county — <b>not</b> for any actual farm. Dark red = the band
     fails most often. The county side is MEASURED from NASS county yield history; the farm side
     is MODELLED, from that series plus <b>one</b> imported parameter, the farm-county yield
-    correlation &rho; (0.70; the tooltip shows the whole 0.55&ndash;0.85 range). Published at
+    correlation &rho; (the tooltip prints the whole sensitivity range beside every figure). Published at
     plan RP and the farm's own coverage level <b>0.85</b>, which is the highest common election
     and therefore the <b>highest</b> miss rate of any of them — the discount here is
     conservative for the ~88% of the book that insures below 85%. A producer's real answer
@@ -2247,7 +2261,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   pay when it did — declining is rational, not an oversight. This is the one of the three that
   is now <b>measured</b> rather than only warned about: pick a
   <span class="fam basisrisk">basis risk</span> metric to see it, and read the
-  basis-risk line in every tooltip. It is measured for Corn, Soybeans and Wheat under SCO and
+  basis-risk line in every tooltip. It is measured for Corn, Soybeans, Wheat and Cotton under SCO and
   ECO only; everywhere else it is <b>unknown</b>, which is not the same as low.
   <b>(3) Availability:</b> a band is only offered where the actuarial documents offer it. This
   page does not read ADM; it infers the offer from observed sales and grades it in the
@@ -2453,6 +2467,14 @@ var DATA = __PAYLOAD__;
       .on("click", function (ev, d) { ev.stopPropagation(); countyClicked(d); });
   g.append("path").attr("class", "statelines").attr("d", path(stateMesh));
   var gFocus = g.append("path").attr("class", "focusline");
+  // Last of all, so nothing overdraws it: the hover outline (casing + line).
+  var gHoverCase = g.append("path").attr("class", "hovercase");
+  var gHoverLine = g.append("path").attr("class", "hoverline");
+  function showHover(feat) {
+    var d = feat ? path(feat) : null;
+    gHoverCase.attr("d", d);
+    gHoverLine.attr("d", d);
+  }
   var countyById = {}; countiesFC.forEach(function (c) { countyById[String(c.id)] = c; });
 
   // ---------------- controls
@@ -3003,6 +3025,13 @@ var DATA = __PAYLOAD__;
     var b = band === ALL_BANDS ? "all bands" : band;
     return esc(CROPS[+fCrop.value] || "") + " · " + esc(b);
   }
+  // Formats the sensitivity band from BMETA rather than a literal, for the same reason
+  // the swing sentence does: a typed-in band outlives the constant it describes.
+  function rhoBand() {
+    var lo = BMETA.rho_lo, hi = BMETA.rho_hi;
+    return (lo === undefined || hi === undefined) ? 'range' : (lo + '&ndash;' + hi);
+  }
+
   function basisLine(s) {
     var keys = Object.keys(s.basis);
     if (!keys.length) return '';
@@ -3038,7 +3067,7 @@ var DATA = __PAYLOAD__;
     if (b.grade) h += ' &middot; grade ' + esc(b.grade);
     h += '</div>';
     h += '<div class="t-math">the band pays <b>nothing</b> in ' + (100 * b.miss).toFixed(0) +
-         '% of the years a typical farm here has a loss &middot; &rho; 0.55&ndash;0.85 &rarr; ' +
+         '% of the years a typical farm here has a loss &middot; &rho; ' + rhoBand() + ' &rarr; ' +
          (100 * b.rlo).toFixed(0) + '%&ndash;' + (100 * b.rhi).toFixed(0) + '%</div>';
     h += '<div class="t-math">' + (100 * b.uncov).toFixed(0) +
          '% of in-band loss <i>dollars</i> uncovered &middot; deep-loss miss ' +
@@ -3112,6 +3141,7 @@ var DATA = __PAYLOAD__;
 
   function hover(ev, d) {
     d3.select(this).classed("hovered", true);
+    showHover(d);
     tip.style.display = "block";
     tip.innerHTML = tipHtml(d);
     var wrap = document.getElementById("mapWrap").getBoundingClientRect();
@@ -3121,6 +3151,7 @@ var DATA = __PAYLOAD__;
   }
   function unhover() {
     d3.select(this).classed("hovered", false);
+    showHover(null);
     tip.style.display = "none";
   }
 
@@ -3189,6 +3220,10 @@ var DATA = __PAYLOAD__;
   }
 
   function applyLevel() {
+    // Drilling replaces what sits under the cursor; clear the outline at the single choke
+    // point every level change passes through rather than relying on mouseout, which does
+    // not reliably fire for a node that is being removed.
+    showHover(null);
     countySel
       .classed("dimmed", function (d) {
         if (level === 0) return false;

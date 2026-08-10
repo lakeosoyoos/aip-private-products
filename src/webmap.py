@@ -256,6 +256,15 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .county { stroke-width: 0.6; }
   .state.dimmed { opacity: 0.25; pointer-events: none; }
   .state.hovered, .county.hovered { stroke: var(--ink); stroke-width: 1.4; }
+  /* Hover readout — a dedicated top-most outline, NOT only a stroke on the hovered shape.
+     Borders are SHARED between neighbours and in SVG the later sibling paints over the
+     earlier one, so a stroke on the shape alone is whole on some edges and erased on others.
+     The pale casing under the dark line keeps it legible at both ends of the blue ramp;
+     non-scaling so it holds its weight when zoomed into a state. */
+  .hovercase { fill: none; stroke: var(--surface); stroke-width: 3.4; stroke-linejoin: round;
+               pointer-events: none; vector-effect: non-scaling-stroke; opacity: 0.85; }
+  .hoverline { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-linejoin: round;
+               pointer-events: none; vector-effect: non-scaling-stroke; }
   #stateOutline { fill: none; stroke: var(--ink); stroke-width: 1.2; pointer-events: none;
                   vector-effect: non-scaling-stroke; }
   #tooltip {
@@ -455,6 +464,16 @@ var DATA = __PAYLOAD__;
   var g = svg.append("g");
   var gStates = g.append("g"), gCounties = g.append("g");
   var outline = g.append("path").attr("id", "stateOutline");
+  // Appended last so nothing overdraws it. mark() drives it from the same hovered/pinned
+  // state the tooltip and side panel use, so all three always agree about what is under the
+  // cursor -- including the PINNED county, which otherwise had no visual anchor at all.
+  var gHoverCase = g.append("path").attr("class", "hovercase");
+  var gHoverLine = g.append("path").attr("class", "hoverline");
+  function showHover(feat) {
+    var d = feat ? path(feat) : null;
+    gHoverCase.attr("d", d);
+    gHoverLine.attr("d", d);
+  }
 
   // ---------------- zoom
   // The transform used to be written straight onto `g`, which meant there was no wheel or
@@ -620,12 +639,18 @@ var DATA = __PAYLOAD__;
   }
   function mark() {
     var h = hovered || pinned;
+    var feat = null;
     gStates.selectAll(".state").classed("hovered", function (d) {
-      return h && h.type === "state" && FIPS2ST[d.id] === h.st;
+      var on = h && h.type === "state" && FIPS2ST[d.id] === h.st;
+      if (on) feat = d;
+      return on;
     });
     gCounties.selectAll(".county").classed("hovered", function (d) {
-      return h && h.type === "county" && d.id === h.fips;
+      var on = h && h.type === "county" && d.id === h.fips;
+      if (on) feat = d;
+      return on;
     });
+    showHover(feat);
   }
 
   function countFor(region, f) {

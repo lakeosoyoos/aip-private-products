@@ -603,3 +603,32 @@ def test_the_rho_swing_sentence_degrades_instead_of_raising():
 
     s = rowcroppage._rho_swing_sentence(band="NOT_A_BAND")
     assert s and s.endswith(".")
+
+
+@skip_no_app_db
+def test_no_map_prose_hardcodes_the_rho_band_or_the_crop_list():
+    """Three separate strings in the generated page quoted "0.55-0.85" or "Corn, Soybeans and
+    Wheat" as literal text. All three sat beside values computed from the live constants, so
+    widening RHO_LO and adding Cotton left the page confidently stating retired facts next to
+    correct numbers -- the failure mode that is hardest to notice, because nothing looks broken.
+
+    The band label now comes from BMETA via rhoBand(). This asserts the literals are gone from
+    the rendered HTML and that the live floor appears in the payload.
+    """
+    import json
+    import sqlite3
+
+    from src import basisrisk as B
+    from src.rowcroppage import build_rowcrop_page_payload
+
+    conn = sqlite3.connect(f"file:{_APP_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    payload = build_rowcrop_page_payload(conn)
+
+    meta = payload["basis_meta"]
+    assert meta["rho_lo"] == B.RHO_LO and meta["rho_hi"] == B.RHO_HI
+    assert "Cotton" in meta["crop_note"]
+
+    blob = json.dumps(payload)
+    assert "0.55&ndash;0.85" not in blob
+    assert "Corn, Soybeans and Wheat" not in blob

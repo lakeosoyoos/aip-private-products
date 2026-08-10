@@ -844,6 +844,18 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .county.focused { stroke: var(--ink); stroke-width: 1.1; }
   .focusline { fill: none; stroke: var(--ink); stroke-width: 2.2; stroke-linejoin: round;
                pointer-events: none; vector-effect: non-scaling-stroke; }
+  /* Hover readout — a dedicated top-most outline, NOT a stroke on the hovered shape.
+     A county's border is SHARED with its neighbours, and in SVG whichever sibling is drawn
+     later paints over it. Styling the shape itself therefore gives an outline that is whole
+     on some edges and erased on others — it reads as noise rather than as "you are here".
+     Grid cells are worse: opaque, and drawn in a later group entirely. .focusline exists for
+     exactly this reason. The pale casing under the dark line keeps it legible against both
+     ends of the choropleth ramp, and both are non-scaling so the weight is the same at every
+     zoom level instead of thinning out as you drill in. */
+  .hovercase { fill: none; stroke: var(--surface); stroke-width: 3.4; stroke-linejoin: round;
+               pointer-events: none; vector-effect: non-scaling-stroke; opacity: 0.85; }
+  .hoverline { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-linejoin: round;
+               pointer-events: none; vector-effect: non-scaling-stroke; }
 </style>
 </head>
 <body>
@@ -1028,6 +1040,15 @@ var DATA = __PAYLOAD__;
   // routinely overhang the county (a 0.25-degree cell rarely respects a county line), so
   // without this the county you drilled into vanishes under its own grids.
   var gFocus = g.append("path").attr("class", "focusline");
+  // Last of all, so it is never overdrawn by anything above: the hover outline. Two paths,
+  // a pale casing under a dark line, both driven by showHover().
+  var gHoverCase = g.append("path").attr("class", "hovercase");
+  var gHoverLine = g.append("path").attr("class", "hoverline");
+  function showHover(feat) {
+    var d = feat ? path(feat) : null;
+    gHoverCase.attr("d", d);
+    gHoverLine.attr("d", d);
+  }
   var countyById = {}; countiesFC.forEach(function (c) { countyById[String(c.id)] = c; });
 
   // ---------------- PRF grid lattice
@@ -1541,6 +1562,7 @@ var DATA = __PAYLOAD__;
 
   function hover(ev, d) {
     d3.select(this).classed("hovered", true);
+    showHover(d);
     tip.style.display = "block";
     tip.innerHTML = metric === "cbv" ? cbvTip(d) : optTip(d);
     var wrap = document.getElementById("mapWrap").getBoundingClientRect();
@@ -1550,6 +1572,7 @@ var DATA = __PAYLOAD__;
   }
   function unhover() {
     d3.select(this).classed("hovered", false);
+    showHover(null);
     tip.style.display = "none";
   }
   function esc(s) {
@@ -1671,6 +1694,7 @@ var DATA = __PAYLOAD__;
 
   function hoverGrid(ev, d, fips, gdm) {
     d3.select(this).classed("hovered", true);
+    showHover(d);
     var v = gridValue(d.id, fips, gdm), gd = gdm[d.id];
     var b = gridBounds(d.id);
     var h = '<div class="t-name">Grid ' + d.id + ' &mdash; ' +
@@ -1698,6 +1722,11 @@ var DATA = __PAYLOAD__;
   // Counties outside the focus are dimmed rather than hidden: the surrounding shading is
   // the comparison that makes a drilled county mean anything.
   function applyLevel() {
+    // Drilling replaces what is under the cursor, and the shape the outline was tracing may
+    // no longer exist (grid cells are removed wholesale on the way out of level 2). mouseout
+    // does not reliably fire for a node that is removed, so clear it here — the single choke
+    // point every level change already passes through.
+    showHover(null);
     countySel
       .classed("dimmed", function (d) {
         if (level === 0) return false;

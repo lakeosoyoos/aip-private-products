@@ -1,0 +1,57 @@
+name: tests
+
+# Runs on every push and PR to main. Before this existed, "the suite passes" meant a human had
+# typed pytest — and on the day this was written, several pushes went out through raw `git
+# push`, bypassing publish.command's test gate entirely. The point of CI here is not that the
+# tests are better than they were; it is that they can no longer be skipped by accident.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # data/catalog_app.db is ~85 MB and committed. Without it the suite still runs:
+          # the DB-dependent tests skip themselves (see the skipif guards in
+          # tests/test_basisrisk.py and friends), which is why this is not an LFS setup.
+          lfs: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-pipeline.txt
+          # pytest is in neither requirements file — it was installed ad hoc locally, which is
+          # exactly how a venv rebuild ended up incomplete. Pinned here so CI cannot repeat it.
+          pip install pytest
+
+      - name: Run the suite
+        env:
+          # Rendering the app writes to lrp_gap_history.csv as a side effect, and a CI run
+          # must never mutate a production calibration. tests/conftest.py sets this too; it is
+          # repeated here so the guarantee does not depend on a fixture staying autouse.
+          LRP_HISTORY_READONLY: '1'
+          APP_PASSCODE: ci
+        run: python -m pytest -q -p no:cacheprovider
+
+      - name: Check the shipped DB is under GitHub's file limit
+        run: |
+          if [ -f data/catalog_app.db ]; then
+            sz=$(stat -c%s data/catalog_app.db)
+            echo "catalog_app.db: $((sz/1000000)) MB"
+            # 100 MB is a hard rejection at push time, which is a bad place to discover it.
+            if [ "$sz" -gt 95000000 ]; then
+              echo "::error::catalog_app.db is over the 95 MB guard"; exit 1
+            fi
+          fi

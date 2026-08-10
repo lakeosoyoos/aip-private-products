@@ -221,10 +221,56 @@ def dedupe_prf_opt_best(conn) -> dict:
             "exceptions": conn.execute("SELECT COUNT(*) FROM _prf_hay_exc").fetchone()[0]}
 
 
-def build(src: Path, out: Path) -> dict:
+# A table may legitimately grow, or shrink a little as RMA revises. A COLLAPSE is different,
+# and it is invisible: a table with a fifth of its rows renders exactly like a full one.
+# This happened. config.ini listed five SERFF states while an ad-hoc harvest had loaded
+# twenty-eight, so a routine refresh rebuilt serff_filings with 2,323 rows instead of 11,287
+# and product_states with 373 instead of 1,253. Every test passed, the app rendered, and the
+# only symptom was a map quietly showing 127 of 182 products as unmapped.
+SHRINK_TOLERANCE = 0.20     # a >20% drop is a collapse, not a revision
+SHRINK_FLOOR = 50           # ignore tiny tables, where one row is a large percentage
+
+
+def _row_counts(db: Path) -> dict:
+    """{table: rows} for an existing DB, or {} if it cannot be read."""
+    try:
+        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+    try:
+        names = [r[0] for r in c.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table','view')")]
+        out = {}
+        for n in names:
+            try:
+                out[n] = c.execute(f"SELECT COUNT(*) FROM {n}").fetchone()[0]
+            except sqlite3.Error:
+                pass
+        return out
+    finally:
+        c.close()
+
+
+def check_no_collapse(prior: dict, now: dict, tolerance: float = SHRINK_TOLERANCE) -> list[str]:
+    """Tables that lost more than `tolerance` of their rows since the last build."""
+    bad = []
+    for name, before in sorted(prior.items()):
+        after = now.get(name)
+        if after is None or before < SHRINK_FLOOR or before == 0:
+            continue
+        if after < before * (1.0 - tolerance):
+            bad.append(f"{name}: {before:,} -> {after:,} ({(before - after) / before:.0%} lost)")
+    return bad
+
+
+def build(src: Path, out: Path, allow_shrink: bool = False) -> dict:
     if not src.exists():
         sys.exit(f"source DB not found: {src}")
     out.parent.mkdir(parents=True, exist_ok=True)
+    # Read the OUTGOING build's row counts before destroying it. The previous shipped DB is
+    # the only baseline that always exists and always matches this script's own definition of
+    # what ships, so it is a better reference than any checked-in fixture.
+    prior = _row_counts(out) if out.exists() else {}
     if out.exists():
         out.unlink()
     # SQLite's online-backup API, not a file copy: the working DB runs in WAL mode, so its
@@ -294,6 +340,14 @@ def build(src: Path, out: Path) -> dict:
         sys.exit(f"REFUSING: app DB is missing required columns: {missing_cols} — run "
                  "scripts/backfill_rate_sums.py against the working DB first.")
 
+    collapsed = check_no_collapse(prior, _row_counts(out))
+    if collapsed and not allow_shrink:
+        sys.exit("REFUSING: tables collapsed since the last build —\n  "
+                 + "\n  ".join(collapsed)
+                 + "\nA smaller table ships and renders exactly like a full one, so this is "
+                   "checked rather than eyeballed. Re-run the loader that fills them, or pass "
+                   "--allow-shrink if the drop is intended.")
+
     mb = out.stat().st_size / 1e6
     if mb > 90:
         print(f"WARNING: app DB is {mb:.0f} MB — GitHub's hard limit is 100 MB per file.")
@@ -305,9 +359,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--src", default=str(REPO / "data" / "catalog.db"))
     ap.add_argument("--out", default=str(REPO / "data" / "catalog_app.db"))
+    ap.add_argument("--allow-shrink", action="store_true",
+                    help="permit a table to lose >20%% of its rows since the last build")
     args = ap.parse_args()
 
-    res = build(Path(args.src), Path(args.out))
+    res = build(Path(args.src), Path(args.out), allow_shrink=args.allow_shrink)
     print(f"working DB : {res['src_mb']:,.0f} MB")
     print(f"app DB     : {res['mb']:,.1f} MB  -> {args.out}")
     print(f"dropped    : {', '.join(res['dropped']) or '(none)'}")

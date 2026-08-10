@@ -500,6 +500,17 @@ def _cell_row(year: int, state: str, fips: str, crop: str, band: str,
         sub_pa = _div(agg["subsidy"], band_acres)
         prem_pa = _div(agg["premium"], band_acres)
         ret = _div(agg["premium"], agg["pprem"])
+        # return_per_dollar is gross / producer premium, i.e. 1/(1 - subsidy share), so it is
+        # BOUNDED BY THE FILED SUBSIDY SCHEDULE. The bands are filed at 80%, and a qualifying
+        # beginning or veteran farmer adds 10 points, so ~90% is the highest share the rules
+        # produce and ~10x the highest honest multiple. Measured, 5,680 county rows exceeded
+        # 5.2x and one reached 20.4x — an implied 95% share that no filed schedule allows.
+        # The source is not wrong: RMA's own SoB carries 508 SCO county rows above a 90%
+        # share, all buy-up, no CAT. They are counties whose premium is small enough that
+        # rounding dominates the split. Guarding on the SHARE rather than on the premium
+        # SIZE is what works: a county can carry thousands of dollars of premium spread thinly
+        # and still produce a 20x ratio, which is why an absolute-dollar floor did not bite.
+        ret = _credible_ret(ret, sub_pa, prem_pa)
         basis = "county"
     else:
         sub_pa = prem_pa = ret = None
@@ -597,6 +608,7 @@ def _rollup(cells: list[dict], year: int, state: str, fips: str, band: str) -> d
                        band_acres)
     pprem_pa = None if (sub_pa is None or prem_pa is None) else max(0.0, prem_pa - sub_pa)
     ret = None if (prem_pa is None or not pprem_pa) else prem_pa / pprem_pa
+    ret = _credible_ret(ret, sub_pa, prem_pa)   # the rollup needs the same rule as a cell
 
     return {
         "year": int(year), "state": state, "county_fips": fips, "crop": ALL_CROPS,
@@ -684,6 +696,34 @@ def compute_rows(totals: dict, year: int, top_crops: int = DEFAULT_TOP_CROPS,
 # The builder now produces all five published levels, so this is a free choice rather than
 # the only row available. Do NOT move it to a level the build did not produce: load_basis_risk
 # filters on it exactly, and every county would silently render "unknown".
+# Highest subsidy share the filed schedules can produce: bands are filed at 80%, and P18-1's
+# beginning/veteran-farmer provision adds 10 points. A county reporting more than this is a
+# rounding artefact, not a richer subsidy, so it reports no return multiple — while still
+# reporting its subsidy and unclaimed dollars, which do not depend on the ratio.
+MAX_CREDIBLE_SUBSIDY_SHARE = 0.92
+
+
+def _credible_ret(ret, sub_pa, prem_pa):
+    """Suppress a return multiple whose implied subsidy share no filed schedule can produce.
+
+    return_per_dollar is gross / producer premium == 1 / (1 - subsidy share), so it is bounded
+    by the schedule: bands are filed at 80%, and P18-1's beginning/veteran-farmer provision
+    adds 10 points, making ~90% the ceiling and ~10x the highest honest multiple. Measured,
+    5,680 rows exceeded 5.2x and one reached 20.4x on an implied 95% share.
+
+    The source is not wrong -- RMA's own SoB carries 508 SCO county rows above a 90% share,
+    all buy-up, no CAT. They are counties whose premium is small enough that rounding
+    dominates the split. The row keeps its subsidy and unclaimed dollars, which do not depend
+    on this ratio; it just declines to quote a multiple.
+
+    ONE helper rather than a check per branch: the first attempt guarded only the per-crop
+    path and the "(all crops)" rollup sailed straight past it, still reporting 17.8x.
+    """
+    if ret is None or not prem_pa:
+        return ret
+    share = (sub_pa or 0.0) / prem_pa
+    return None if share > MAX_CREDIBLE_SUBSIDY_SHARE else ret
+
 BASIS_PLAN_TYPE = "RP"
 BASIS_COVERAGE_LEVEL = 0.75
 

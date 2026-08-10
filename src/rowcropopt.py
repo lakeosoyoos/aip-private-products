@@ -757,8 +757,23 @@ BASIS_BAND_NOTE: dict[str, str] = {
             "the producer's own coverage level.",
 }
 BASIS_CROP_NOTE = (
-    "basis_risk_county covers Corn, Soybeans and Wheat — the crops with a long enough NASS "
-    "county yield series to detrend. Every other crop on this map is unknown, not low.")
+    "basis_risk_county covers Corn, Soybeans, Wheat and Cotton — the crops with a long enough "
+    "NASS county yield series to detrend. Every other crop on this map is unknown, not low.")
+
+# Shown wherever a basis-risk figure is. Without it the widened rho band is invisible: the map
+# would keep quoting a mid-range number while the only real-world check we have sits below it.
+BASIS_OPTIMISM_NOTE = (
+    "**These miss rates are more likely optimistic than pessimistic.** They are simulated from "
+    "an assumed farm-to-county yield correlation of 0.70. Counting what actually happened "
+    "instead — every individual policy that collected an indemnity in 2015–2024, and whether "
+    "the area band paid alongside it — gives a **55.8% miss rate on SCO where this model "
+    "simulates about 36%**, implying a correlation nearer 0.34 for corn and 0.28 for soybeans. "
+    "The measured decade contains **none of the six systemic drought years** in the 36-year "
+    "record, and a drought is exactly when a county trigger fires, so the observation is drawn "
+    "from the period least favourable to an area product; correcting for that puts the true "
+    "figure at 46–56% rather than 55.8%. The point estimate here stays at 0.70, but the "
+    "sensitivity floor has been widened from 0.55 to 0.35 to cover what the record actually "
+    "did. Read the low end of any range as the realistic case for corn and soybeans.")
 
 # Coverage states. Three, deliberately: the two-state version is the bug this join exists to
 # avoid, because it forces every unmeasured county into whichever bucket is convenient.

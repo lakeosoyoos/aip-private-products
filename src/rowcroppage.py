@@ -100,7 +100,8 @@ from .prfpage import (
 )
 from .rowcropopt import (
     ALL_CROPS, BAND_LABELS, BAND_ORDER, BASIS_BAND_NOTE, BASIS_COVERAGE_LEVEL, BASIS_COVERED,
-    BASIS_CROP_NOTE, BASIS_GRADES, BASIS_PARTIAL, BASIS_PLAN_TYPE, BASIS_STATES, BASIS_TERMS,
+    BASIS_CROP_NOTE, BASIS_GRADES, BASIS_OPTIMISM_NOTE, BASIS_PARTIAL, BASIS_PLAN_TYPE,
+    BASIS_STATES, BASIS_TERMS,
     BASIS_UNKNOWN, MIN_BASIS_COVER, basis_variants, join_basis_risk, load_basis_risk,
 )
 
@@ -409,6 +410,8 @@ def build_rowcrop_page_payload(conn: sqlite3.Connection, year=None,
                         for b in BAND_ORDER},
             "band_note": dict(BASIS_BAND_NOTE),
             "crop_note": BASIS_CROP_NOTE,
+            # Travels with every basis figure — the widened rho floor is otherwise invisible.
+            "optimism_note": BASIS_OPTIMISM_NOTE,
         },
         "county_states": states,
         "county_names": _county_names(conn),
@@ -2039,6 +2042,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
     border: 1px solid var(--baseline); border-radius: 6px; background: var(--surface);
   }
   #rankBtn.on { background: #238b45; color: #fff; border-color: #238b45; }
+
+  .caveat-optimism { margin-top: 8px; padding: 8px 10px; border-left: 3px solid #eda100;
+                     background: #fdf6e7; color: #6b4b00; font-size: 12px;
+                     line-height: 1.45; }
 </style>
 </head>
 <body>
@@ -2805,6 +2812,15 @@ var DATA = __PAYLOAD__;
          "% of the county × crop × band cells here (" +
          (c.covered || 0).toLocaleString() + " fully, " + (c.partial || 0).toLocaleString() +
          " partly); " + (c.unknown || 0).toLocaleString() + " are UNKNOWN, which is not low.");
+    // The widened rho floor is invisible unless it is stated. A reader comparing counties
+    // needs to know the whole scale leans optimistic on corn and soybeans — not merely that
+    // some cells are unmeasured, which is a different and much smaller caveat.
+    if (BMETA.optimism_note) {
+      var opt = document.createElement("div");
+      opt.className = "caveat-optimism";
+      opt.innerHTML = String(BMETA.optimism_note).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+      el.parentNode.insertBefore(opt, el.nextSibling);
+    }
   })();
 
   function footNote() {

@@ -384,10 +384,28 @@ ECO_TRIGGER_MIX: dict[float, float] = {0.90: 0.0105, 0.95: 0.9895}
 
 # Farm-county yield correlation. THE one parameter this module imports from outside the data.
 # See docs/basis_risk.md for the sources and for the sensitivity of every output to it.
-# Deliberately a wide band, because the literature's own range is wide and varies by crop,
-# region and farm size.
+#
+# THE LOW END IS 0.35, NOT 0.55, AND THAT CHANGE IS EMPIRICAL. src/basisrisk_empirical.py
+# counts what actually happened instead of simulating it: across 2015-2024, 1,460,637
+# individual policies collected an indemnity and 815,129 of them sat in a county-year where
+# the area band paid NOTHING — a 55.8% miss rate, against the ~36% this module simulates at
+# rho 0.70. Inverting the simulator on that target implies rho 0.34 for corn and 0.28 for
+# soybeans at one unit, 0.47 and 0.39 at two. Your book is ~1.5 effective units. Wheat lands
+# at 0.58-0.72 and is the only crop the old band contained.
+#
+# The old band's floor was therefore too high for the two crops that carry most of the
+# acreage, and every output at RHO_LO was correspondingly optimistic.
+#
+# RHO_REF STAYS AT 0.70 on purpose. The measured window contains none of the six systemic
+# years in the 36-year record (1989, 1991, 1992, 1993, 2002, 2012) against a 16.7% base rate,
+# and a systemic year is by definition one the index FIRES — so the observation is drawn from
+# precisely the decade that flatters local, scattered losses and penalises an area trigger.
+# Correcting for that puts the true miss at 46.5-55.8% rather than 55.8%. That is enough to
+# say the floor was wrong; it is not enough to move the centre.
+#
+# Read RHO_LO as "what the record actually did in a drought-free decade", not as a tail.
 RHO_REF = 0.70
-RHO_LO = 0.55
+RHO_LO = 0.35
 RHO_HI = 0.85
 
 # Depth below the deductible that counts as a "deep" loss for deep_miss_rate, in coverage points.

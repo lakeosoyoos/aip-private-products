@@ -507,13 +507,36 @@ def test_stax_note_does_not_claim_stax_is_better_than_eco90(conn):
     assert "identical" in note or "same" in note
 
 
-def test_a_crop_outside_corn_soy_wheat_is_unknown_not_defaulted(conn):
+def test_a_crop_with_no_row_is_unknown_not_defaulted(conn):
+    """Cotton used to be the example of an uncovered crop; it is covered now, so the test
+    uses one that genuinely is not. The property under test never changed: a crop with no
+    basis_risk_county row must come back None rather than inherit a neighbour's number.
+    """
     from src.rowcropopt import basis_for_cell, basis_note_for, load_basis_risk
+
     _br(conn, crop="Corn", miss=0.18)
     conn.commit()
     index = load_basis_risk(conn)
-    assert basis_for_cell(index, "31041", "Cotton", "ECO") is None
-    assert "Corn, Soybeans and Wheat" in basis_note_for("ECO", "Cotton")
+    assert basis_for_cell(index, "31041", "Grain Sorghum", "ECO") is None
+    note = basis_note_for("ECO", "Grain Sorghum")
+    assert "unknown, not low" in note.lower()
+
+
+def test_the_crop_note_lists_the_crops_actually_covered(conn):
+    """The note is the only place a reader learns which crops HAVE an estimate. If it drifts
+    from the build, someone reads 'unknown' for a crop that was measured — or the reverse."""
+    import importlib.util
+    from pathlib import Path
+
+    from src.rowcropopt import BASIS_CROP_NOTE
+
+    # The crop list lives in the BUILDER, which is the thing that decides what exists.
+    spec = importlib.util.spec_from_file_location(
+        "_bbr", Path(__file__).resolve().parents[1] / "scripts/analysis/build_basis_risk.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for crop in mod.CROPS:
+        assert crop in BASIS_CROP_NOTE, f"{crop} is built but the note does not mention it"
 
 
 def test_load_basis_risk_honors_plan_type_and_coverage_level(conn):

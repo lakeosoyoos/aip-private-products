@@ -564,8 +564,10 @@ def render() -> None:
 # Everything above this line is county-typical. `basis_risk_county` describes a MODELLED
 # farm in each county, and the one parameter that model cannot get from public data is rho,
 # the farm-to-county yield correlation — imported at 0.70 for every county in the United
-# States (src/basisrisk.py: RHO_REF). That single assumption swings the answer roughly 2x:
-# nationally the SCO86 miss rate averages 0.455 at rho=0.55 and 0.235 at rho=0.85.
+# States (src/basisrisk.py: RHO_REF). That single assumption swings the answer several-fold:
+# nationally the SCO86 miss rate averages ~0.53 at RHO_LO and ~0.09 at RHO_HI. Deliberately
+# approximate here — the page quotes the live figures via _rho_swing_sentence(), because the
+# exact numbers move whenever the band or the coverage level does, and this comment does not.
 #
 # A producer who reads ten years off their own APH schedule replaces that assumption with a
 # MEASUREMENT of their own operation. Nothing else about these products is farm-specific:
@@ -1453,6 +1455,33 @@ def _years_str(years) -> str:
     return ", ".join(str(y) for y in years) if years else "none"
 
 
+def _rho_swing_sentence(band: str = "SCO86") -> str:
+    """How much the imported rho assumption moves the answer, measured from the shipped table.
+
+    Returns the tail of a sentence beginning "that one assumption ...". Reads the stored
+    miss_rate_rho_lo / miss_rate_rho_hi columns rather than restating them, so widening the
+    band updates the prose in the same commit that widens the band.
+
+    Degrades to a bare statement if the table is missing or the columns are NULL: the point of
+    the paragraph is that rho matters, and that survives not being able to quantify it here.
+    """
+    generic = ("swings the answer substantially — see the band shown with every miss rate "
+               "below.")
+    try:
+        conn = _streamlit_helpers()["open"](_farm_db_path())
+        row = conn.execute(
+            "SELECT AVG(miss_rate_rho_lo), AVG(miss_rate_rho_hi) FROM basis_risk_county "
+            "WHERE band = ? AND coverage_level = ?", (band, BASIS_COVERAGE_LEVEL)).fetchone()
+    except Exception:                                       # pragma: no cover - display only
+        return generic
+    if not row or row[0] is None or row[1] is None or row[1] <= 0:
+        return generic
+    lo, hi = float(row[0]), float(row[1])
+    return (f"swings the answer about **{lo / hi:.0f}x** (nationally the {band} miss rate "
+            f"averages {lo:.3f} at a correlation of {B.RHO_LO:g} and {hi:.3f} at "
+            f"{B.RHO_HI:g}).")
+
+
 def render_farm_calculator() -> None:
     """The producer-facing calculator, as rowcroppage.render_farm_calculator().
 
@@ -1465,11 +1494,15 @@ def render_farm_calculator() -> None:
     import streamlit as st
 
     st.subheader("My farm — is a county-triggered band worth it for THIS operation?")
+    # The swing is quoted from the DATA, not typed in. It was typed in once, and when RHO_LO
+    # was widened the sentence went on citing the retired floor — on the page whose whole
+    # argument is that this assumption is the weakest number in the model. A hardcoded number
+    # cannot be widened, so the figures now come from _rho_swing_sentence().
+    swing = _rho_swing_sentence()
     st.markdown(
         "Everything else on this page is **county-typical**. It assumes every farm in the "
-        "country moves with its county at a correlation of **0.70**, because no public data "
-        "says otherwise — and that one assumption swings the answer about **2x** (nationally "
-        "the SCO86 miss rate averages 0.455 at a correlation of 0.55 and 0.235 at 0.85).\n\n"
+        f"country moves with its county at a correlation of **{B.RHO_REF:.2f}**, because no "
+        f"public data says otherwise — and that one assumption {swing}\n\n"
         "You can replace it. Read your harvested yields off your APH / production schedule "
         "below and this measures **your** correlation to **your** county, and **your** miss "
         "rate — the share of the years you lose money in which a county-index endorsement "
@@ -1741,6 +1774,13 @@ def _render_farm_report(st, r: FarmReport) -> None:
         "map's assumption: that column is the apples-to-apples measure of what your own records "
         "bought you. **Of the 5x** is the share of the gross return that lands in a year you "
         "actually had an in-band loss; the rest is real income but it is a transfer, not cover.")
+
+    # Three of the five columns above ("If we assumed 0.70", "County-typical, published", "US
+    # average") are simulated at RHO_REF, and the one empirical check we have says that
+    # simulation is optimistic. The note is attached HERE, next to the table, rather than left
+    # on the standalone opportunity page it was first written for -- this table is where the
+    # app actually prints a miss rate, so this is where the qualification has to be readable.
+    st.warning(BASIS_OPTIMISM_NOTE)
 
     best = r.outcome.get(r.best_band) if r.best_band else None
     if best is not None and precise:

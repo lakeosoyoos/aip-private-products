@@ -493,3 +493,113 @@ def test_payload_builds_against_the_shipped_app_db():
     assert counts["unknown"] > 0
     # Every row that made it into the map is classified into exactly one of the three states.
     assert 0 < sum(counts.values()) <= p["row_count"]
+
+
+@skip_no_app_db
+def test_the_optimism_caveat_is_emitted_by_the_real_farm_report_render():
+    """BASIS_OPTIMISM_NOTE was first wired only into render_rowcrop_page_html, which
+    streamlit_app.py never calls -- that page is a standalone generated artifact. The result
+    was a caveat that existed, passed its own test, and was invisible to every user of the app.
+
+    This drives the actual render with a real FarmReport built from the shipped DB and a
+    recording stand-in for `st`, rather than grepping the source: the question is whether a
+    producer looking at their own band table sees the qualification, and only running the
+    function answers that.
+    """
+    import random
+    import sqlite3
+
+    from src import rowcroppage as R
+
+    class _Col:
+        def metric(self, *a, **k): pass
+
+    class _Ctx:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def __getattr__(self, n): return lambda *a, **k: None
+
+    class _St:
+        def __init__(self): self.calls = []
+        def __getattr__(self, name):
+            if name == "columns":
+                return lambda n, *a, **k: [_Col() for _ in
+                                           range(n if isinstance(n, int) else len(n))]
+            if name == "expander":
+                return lambda *a, **k: _Ctx()
+            if name == "tabs":
+                return lambda labels, *a, **k: [_Ctx() for _ in labels]
+            def rec(*a, **k):
+                self.calls.append((name, a[0] if a else ""))
+            return rec
+
+    conn = sqlite3.connect(f"file:{_APP_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT county_fips FROM basis_risk_county WHERE crop='Corn' LIMIT 1").fetchone()
+    if row is None:
+        import pytest
+        pytest.skip("no Corn rows in basis_risk_county")
+    fips = row[0]
+    series = R.load_county_series(conn, "Corn", fips)
+    rng = random.Random(3)
+    farm = {y: v * (0.9 + 0.2 * rng.random()) for y, v in zip(series.years, series.values)}
+    report = R.farm_report(
+        series, farm, coverage_level=0.85, plan_type="RP", farm_detrend="county",
+        published=R.published_basis_risk(conn, "Corn", fips),
+        national=R.typical_miss_by_band(conn))
+
+    st = _St()
+    R._render_farm_report(st, report)
+    assert any("optimistic" in str(v) for _, v in st.calls), (
+        "a producer reading their own band table must see the optimism caveat; it reached "
+        "only the standalone opportunity page once"
+    )
+
+
+def test_the_app_renders_the_farm_calculator_and_not_the_standalone_page():
+    """Pins the reachability fact the test above depends on, so that if the opportunity map is
+    ever wired into the app the pairing gets revisited deliberately rather than by surprise."""
+    from pathlib import Path
+
+    app = Path(__file__).resolve().parents[1] / "streamlit_app.py"
+    text = app.read_text()
+    assert "render_farm_calculator" in text
+    assert "render_rowcrop_page_html" not in text, (
+        "the opportunity map is now in the app -- check that it carries the optimism note too"
+    )
+
+
+def test_the_rho_swing_sentence_is_read_from_the_data_not_typed_in():
+    """The farm calculator's opening paragraph quotes how far the rho assumption moves the
+    answer. It used to say "about 2x ... 0.455 at a correlation of 0.55 and 0.235 at 0.85",
+    typed in by hand -- so when RHO_LO moved 0.55 -> 0.35 the sentence went on citing the
+    retired floor, on the page whose entire argument is that rho is the weakest number here.
+
+    Two things are asserted: the live constants appear in the sentence, and the retired 0.55
+    does not appear as a correlation anywhere in the calculator's source.
+    """
+    import inspect
+
+    from src import basisrisk as B
+    from src import rowcroppage
+
+    s = rowcroppage._rho_swing_sentence()
+    assert f"{B.RHO_LO:g}" in s and f"{B.RHO_HI:g}" in s, s
+    assert "SCO86" in s
+
+    src = inspect.getsource(rowcroppage.render_farm_calculator)
+    assert "0.455" not in src and "correlation of 0.55" not in src, (
+        "the swing figures must come from _rho_swing_sentence(), not be typed into the prose"
+    )
+
+
+def test_the_rho_swing_sentence_degrades_instead_of_raising():
+    """It renders inside the first paragraph of the page. If basis_risk_county is missing or
+    its bound columns are NULL, the paragraph must still make its point rather than take the
+    tab down -- the claim "rho matters" does not depend on being able to quantify it here.
+    """
+    from src import rowcroppage
+
+    s = rowcroppage._rho_swing_sentence(band="NOT_A_BAND")
+    assert s and s.endswith(".")

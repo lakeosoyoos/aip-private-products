@@ -321,6 +321,13 @@ CREATE TABLE IF NOT EXISTS prf_opt_best (
     grid_id         INTEGER NOT NULL,
     intended_use    TEXT NOT NULL,
     coverage_level  REAL NOT NULL,
+    -- The maximum percent of value one index interval may carry. It is ACTUARIAL (published
+    -- per offer in ADM A01210, harvested to prf_max_pct), not a national constant: RY2026
+    -- runs 40/45/50/60/70 and nine states are not uniform across their own counties. It is
+    -- part of the KEY because it defines the legal policy universe, so two counties under one
+    -- grid with different caps have genuinely different best policies. Only 617 of 13,462
+    -- grids straddle a cap boundary, so this costs 1.05x the rows, not 5x.
+    max_pct         INTEGER NOT NULL,
     year_min        INTEGER, year_max INTEGER,
     n_policies      INTEGER,
     best_win_rate   REAL,               -- max win rate over all policies
@@ -342,7 +349,7 @@ CREATE TABLE IF NOT EXISTS prf_opt_best (
     best_net_rate_sum REAL,
     top_json        TEXT,               -- top-N policies by each metric, JSON
     source          TEXT, fetched_at TEXT,
-    PRIMARY KEY (grid_id, intended_use, coverage_level)
+    PRIMARY KEY (grid_id, intended_use, coverage_level, max_pct)
 );
 
 -- Which counties each PRF grid touches (a grid can span several counties and vice versa).

@@ -70,6 +70,7 @@ import argparse
 import ast
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,8 +79,18 @@ from . import config, db, http, prfbulk, prfdata, prfopt
 
 ADM_DIR = config.CACHE_DIR / "adm"
 
-# Calibration window (see prfopt docstring): 19 complete years, 2006..2024.
-YEARS = tuple(range(2006, 2025))
+# Scoring window: 20 complete years, 2006..2025.
+#
+# Was 2006..2024, because that is what the grid-27663 calibration WORKBOOK covered. That is a
+# reason to trust the arithmetic against 19 years, not a reason to score on 19 forever. 2025
+# is now final -- all 11 intervals, non-null -- and is loaded by
+# scripts/harvest_prf_index_2025.py from the PRF support-tool API, because RMA's bulk
+# Rainfall_Index_HistoricData2026CY.zip still stops at 2024.
+#
+# A side effect, not the reason: 1/20 makes every win rate a clean multiple of 5%. That is
+# cosmetic. Twenty observations still carry roughly a +/-11 point interval on a win rate; the
+# argument for the change is the extra year of evidence, not the rounder number.
+YEARS = tuple(range(2006, 2026))
 
 TOP_N = 10
 
@@ -187,14 +198,16 @@ def grid_county_rows(grid_ids, use: str = "Grazing",
 # Scoring one grid (reuses the prfopt engine; no reimplementation)
 # ---------------------------------------------------------------------------
 
-_POLICIES = None
+# Keyed by cap: the legal policy universe DEPENDS on the county's maximum percent of value,
+# so a single cached list would silently score every grid against one state's rules.
+_POLICIES: dict[int, list] = {}
 
 
-def _policies():
-    global _POLICIES
-    if _POLICIES is None:
-        _POLICIES = prfopt.enumerate_policies()
-    return _POLICIES
+def _policies(max_pct: int = prfopt.MAX_PCT):
+    got = _POLICIES.get(max_pct)
+    if got is None:
+        got = _POLICIES[max_pct] = prfopt.enumerate_policies(max_pct=max_pct)
+    return got
 
 
 def _policy_entry(row) -> dict:
@@ -229,9 +242,64 @@ def rate_sum(combo, props, rates: dict) -> float | None:
     return total
 
 
+# ---------------------------------------------------------------------------
+# The actuarial cap
+# ---------------------------------------------------------------------------
+
+_CAPS: dict[int, tuple[int, ...]] | None = None
+DEFAULT_CAP = prfopt.MAX_PCT
+
+
+def grid_caps(conn) -> dict[int, tuple[int, ...]]:
+    """grid_id -> the distinct maximum-percent-of-value caps its counties are under.
+
+    The cap is published per COUNTY (prf_max_pct, from ADM A01210) but the sweep is per GRID,
+    and a grid touches ~2.3 counties. Where those counties disagree the grid has more than one
+    legal policy universe and therefore more than one best policy, so it is swept once per
+    distinct cap and prf_opt_best carries max_pct in its key.
+
+    In RY2026 that is cheap: 12,845 grids see one cap, 605 see two, 12 see three — 14,091
+    (grid, cap) pairs against 13,462 grids, or 1.05x the work.
+
+    Within a county the cap can also vary BY INTERVAL (three statements read like "40% except
+    for growing seasons 10, 11 and 12 which is 50%"). prf_max_pct stores the conservative
+    value for those, and MIN here keeps that choice: a cap that is too low can only withhold
+    an allocation that might have been legal, while one that is too high recommends a policy
+    the producer cannot bind.
+    """
+    global _CAPS
+    if _CAPS is not None:
+        return _CAPS
+    out: dict[int, set[int]] = {}
+    try:
+        rows = conn.execute("""
+            SELECT gc.grid_id, MIN(m.max_pct)
+              FROM prf_grid_county gc
+              JOIN prf_max_pct m
+                ON m.state_code  = substr(printf('%05d', gc.county_fips), 1, 2)
+               AND m.county_code = substr(printf('%05d', gc.county_fips), 3, 3)
+             GROUP BY gc.grid_id, gc.county_fips""").fetchall()
+    except sqlite3.OperationalError:
+        rows = []                       # prf_max_pct not harvested yet
+    for gid, cap in rows:
+        if cap is not None:
+            out.setdefault(int(gid), set()).add(int(cap))
+    _CAPS = {g: tuple(sorted(v)) for g, v in out.items()}
+    return _CAPS
+
+
+def caps_for(conn, grid_id: int) -> tuple[int, ...]:
+    """The caps to sweep this grid under; falls back to the legacy constant if unknown.
+
+    An unknown grid is swept at DEFAULT_CAP rather than skipped, so a missing prf_max_pct
+    harvest degrades to the old behaviour instead of emptying the table.
+    """
+    return grid_caps(conn).get(int(grid_id)) or (DEFAULT_CAP,)
+
+
 def compute_grid_best(conn, grid_id: int, use: str = "Grazing",
                       coverage: float = 0.90, years=YEARS,
-                      top_n: int = TOP_N) -> dict:
+                      top_n: int = TOP_N, max_pct: int = prfopt.MAX_PCT) -> dict:
     """Score all admissible policies for one grid; return the prf_opt_best row.
 
     Normalized per $1 protection (protection=1.0, round_cents=False,
@@ -268,7 +336,7 @@ def compute_grid_best(conn, grid_id: int, use: str = "Grazing",
     nets, yrs = prfopt.interval_year_nets(
         idx100, rates, subsidy, coverage_level=coverage, years=list(years),
         protection=1.0, round_cents=False, sentinel_net=None)
-    usable = [p for p in _policies() if all(iv in nets for iv in p[0])]
+    usable = [p for p in _policies(max_pct) if all(iv in nets for iv in p[0])]
     if not usable:
         raise SweepSkip(
             f"only {len(rates)} rated interval(s); no admissible 2-interval policy")
@@ -285,6 +353,7 @@ def compute_grid_best(conn, grid_id: int, use: str = "Grazing",
         "grid_id": int(grid_id),
         "intended_use": use,
         "coverage_level": float(coverage),
+        "max_pct": int(max_pct),
         "year_min": int(min(yrs)),
         "year_max": int(max(yrs)),
         "n_policies": int(len(df)),
@@ -317,20 +386,20 @@ def compute_grid_best(conn, grid_id: int, use: str = "Grazing",
 def upsert_best(conn, row: dict, source: str = "prfsweep") -> None:
     conn.execute(
         """INSERT INTO prf_opt_best
-             (grid_id, intended_use, coverage_level, year_min, year_max,
+             (grid_id, intended_use, coverage_level, max_pct, year_min, year_max,
               n_policies, best_win_rate, best_win_combo, best_win_props,
               best_win_avg_net, best_net, best_net_combo, best_net_props,
               best_net_win_rate, median_net, pct_positive,
               best_win_rate_sum, best_net_rate_sum, top_json,
               source, fetched_at)
-           VALUES (:grid_id, :intended_use, :coverage_level, :year_min,
+           VALUES (:grid_id, :intended_use, :coverage_level, :max_pct, :year_min,
                    :year_max, :n_policies, :best_win_rate, :best_win_combo,
                    :best_win_props, :best_win_avg_net, :best_net,
                    :best_net_combo, :best_net_props, :best_net_win_rate,
                    :median_net, :pct_positive,
                    :best_win_rate_sum, :best_net_rate_sum,
                    :top_json, :source, :fetched_at)
-           ON CONFLICT(grid_id, intended_use, coverage_level) DO UPDATE SET
+           ON CONFLICT(grid_id, intended_use, coverage_level, max_pct) DO UPDATE SET
              year_min=excluded.year_min, year_max=excluded.year_max,
              n_policies=excluded.n_policies,
              best_win_rate=excluded.best_win_rate,
@@ -410,8 +479,9 @@ def sweep(conn, state: str = "ID", use: str = "Grazing", coverage: float = 0.90,
                     client = http.Client(cfg, conn)
                 summary = prfdata.ensure_grid(gid, conn, cfg=cfg, client=client,
                                               use=use, force=False)
-                row = compute_grid_best(conn, gid, use, coverage)
-                upsert_best(conn, row, source=f"prfsweep_{cfg.reinsurance_year}")
+                for cap in caps_for(conn, gid):
+                    row = compute_grid_best(conn, gid, use, coverage, max_pct=cap)
+                    upsert_best(conn, row, source=f"prfsweep_{cfg.reinsurance_year}")
                 swept += 1
                 if delay and ("index_rows_fetched" in summary
                               or "rate_rows_fetched" in summary):
@@ -477,14 +547,16 @@ def _worker_init(db_path, use, coverage) -> None:
         os.environ.setdefault(var, "1")
     _W["conn"] = db.connect(db_path)
     _W["use"], _W["coverage"] = use, coverage
-    _policies()          # build the 59,536-policy list once per worker
+    _policies()          # warm the default-cap list once per worker
 
 
 def _score_one(conn, grid_id, use, coverage):
     """(grid_id, row_or_None, error_or_None) -- never raises, so one bad grid
     can neither abort a 13,000-grid run nor kill a worker pool."""
     try:
-        return grid_id, compute_grid_best(conn, grid_id, use, coverage), None
+        rows = [compute_grid_best(conn, grid_id, use, coverage, max_pct=cap)
+                for cap in caps_for(conn, grid_id)]
+        return grid_id, rows, None
     except SweepSkip as e:
         return grid_id, None, str(e)
     except Exception as e:
@@ -563,14 +635,18 @@ def sweep_bulk(conn, state: str | None = None, use: str = "Grazing",
     skipped: dict[int, str] = {}
     t0 = time.monotonic()
 
-    def _record(gid, row, err):
+    def _record(gid, rows, err):
+        # `rows` is a LIST: one prf_opt_best row per distinct actuarial cap the grid's
+        # counties are under. Usually length 1; 617 grids straddle a cap boundary and get two
+        # or three. The grid still counts as swept ONCE — the counter tracks grids, not rows.
         nonlocal swept
         st = state_of.get(gid, "??")
         if err is not None:
             skipped[gid] = err
             per_state[st]["skipped"] += 1
             return
-        upsert_best(conn, row, source=f"prfbulk_{cfg.reinsurance_year}")
+        for row in rows:
+            upsert_best(conn, row, source=f"prfbulk_{cfg.reinsurance_year}")
         scored.append(gid)
         per_state[st]["swept"] += 1
         swept += 1

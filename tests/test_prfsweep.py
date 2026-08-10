@@ -85,7 +85,9 @@ def test_grid_county_rows_cross_state(adm_dir):
 # ---------------------------------------------------------------------------
 
 GRID = 101
-YEARS = list(range(2006, 2025))
+# Mirrors prfsweep.YEARS — the scoring window is 20 years, 2006..2025. A fixture that
+# stops short of it makes every grid look like it has incomplete index data.
+YEARS = list(range(2006, 2026))
 
 
 def _seed_grid(conn, grid=GRID, years=YEARS, rate_intervals=prfopt.INTERVALS,
@@ -122,7 +124,7 @@ def test_compute_grid_best_metrics(catalog):
     _seed_grid(catalog)
     row = compute_grid_best(catalog, GRID)
     assert row["n_policies"] == 59_536          # all intervals offered
-    assert row["year_min"] == 2006 and row["year_max"] == 2024
+    assert row["year_min"] == 2006 and row["year_max"] == 2025
     assert 0.0 <= row["best_win_rate"] <= 1.0
     assert 0.0 <= row["best_net_win_rate"] <= row["best_win_rate"]
     assert row["best_net"] >= row["best_win_avg_net"] >= row["median_net"] - 1e12
@@ -323,3 +325,52 @@ def test_upsert_best_tolerates_a_row_without_rate_sums(catalog):
     got = catalog.execute(
         "SELECT best_win_rate_sum, best_net_rate_sum FROM prf_opt_best").fetchone()
     assert got["best_win_rate_sum"] is None and got["best_net_rate_sum"] is None
+
+
+def test_the_scoring_window_is_twenty_years_ending_2025():
+    """Was 2006..2024 because that is what the calibration workbook covered. 2025 is final
+    and loaded, so the window is 2006..2025 — and the fixtures must track it, or every grid
+    reads as having incomplete index data."""
+    from src import prfsweep
+    assert prfsweep.YEARS == tuple(range(2006, 2026))
+    assert len(prfsweep.YEARS) == 20
+
+
+def test_the_policy_universe_is_cached_per_cap_not_globally(monkeypatch):
+    """The legal allocation set DEPENDS on the county's maximum percent of value. A single
+    cached list would score every grid in the country against whichever state warmed it
+    first — silently, and with plausible-looking output."""
+    from src import prfopt, prfsweep
+
+    prfsweep._POLICIES.clear()
+    small, large = prfsweep._policies(40), prfsweep._policies(70)
+    assert len(small) < len(large), "a lower cap must admit fewer allocations"
+    assert len(small) == len(prfopt.enumerate_policies(max_pct=40))
+    assert len(large) == len(prfopt.enumerate_policies(max_pct=70))
+    # cached, not recomputed
+    assert prfsweep._policies(40) is small
+
+
+def test_no_allocation_exceeds_its_cap():
+    """The property that makes the recommendation buyable at all."""
+    from src import prfsweep
+
+    for cap in (40, 50, 70):
+        for combo, props in prfsweep._policies(cap):
+            assert max(props) <= cap, (cap, combo, props)
+            assert sum(props) == 100
+
+
+def test_caps_for_falls_back_rather_than_dropping_a_grid(tmp_path):
+    """An unharvested prf_max_pct must degrade to the legacy constant, not empty the sweep."""
+    import sqlite3
+
+    from src import prfsweep
+
+    prfsweep._CAPS = None
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE prf_grid_county (grid_id INTEGER, county_fips TEXT)")
+    try:
+        assert prfsweep.caps_for(conn, 99999) == (prfsweep.DEFAULT_CAP,)
+    finally:
+        prfsweep._CAPS = None

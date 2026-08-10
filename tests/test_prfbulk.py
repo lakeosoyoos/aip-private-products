@@ -74,7 +74,8 @@ def test_interval_codes_are_the_eleven_sequential_bimonthly_intervals():
 # ---------------------------------------------------------------------------
 
 GRIDS = (101, 102)
-YEARS = tuple(range(2006, 2025))
+# Mirrors prfsweep.YEARS: 20 years, 2006..2025.
+YEARS = tuple(range(2006, 2026))
 CODES = tuple(str(c) for c in range(625, 636))
 
 
@@ -278,7 +279,7 @@ def test_window_hash_covers_only_the_scoring_window(catalog, bulk_zip):
     prfbulk.load_indices(catalog, zip_path=bulk_zip, cfg=_Cfg(), log=lambda *a: None)
     h = prfbulk.window_hash(catalog, 101)
     assert h and len(h) == 64
-    # a value OUTSIDE 2006-2024 must not move the fingerprint
+    # a value OUTSIDE 2006-2025 must not move the fingerprint
     catalog.execute("INSERT OR REPLACE INTO prf_grid_index VALUES "
                     "(101, 1995, 'JAN-FEB', 0.5, 's', 't')")
     catalog.commit()

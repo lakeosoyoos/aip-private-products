@@ -46,10 +46,10 @@ def _rate(conn, grid, use, cov, interval, rate, year=2026):
 def _best(conn, grid, use="Grazing", cov=0.9, win_combo='["JAN-FEB"]', win_props="[100]",
           net_combo='["JUL-AUG"]', net_props="[100]"):
     conn.execute(
-        "INSERT INTO prf_opt_best (grid_id, intended_use, coverage_level, best_win_rate, "
-        "best_win_combo, best_win_props, best_net, best_net_combo, best_net_props) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        (grid, use, cov, 0.5, win_combo, win_props, 0.1, net_combo, net_props))
+        "INSERT INTO prf_opt_best (grid_id, intended_use, coverage_level, max_pct, "
+        "best_win_rate, best_win_combo, best_win_props, best_net, best_net_combo, "
+        "best_net_props) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (grid, use, cov, 60, 0.5, win_combo, win_props, 0.1, net_combo, net_props))
 
 
 # ------------------------------------------------------------------ arithmetic

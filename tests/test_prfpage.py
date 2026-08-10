@@ -57,13 +57,13 @@ def _opt(conn, grid_id, use="Grazing", cov=0.9, *, win=None, win_combo=None,
          net_win=None, median_net=None, pct_positive=None,
          win_rate_sum=None, net_rate_sum=None):
     conn.execute(
-        "INSERT INTO prf_opt_best (grid_id, intended_use, coverage_level, year_min, "
+        "INSERT INTO prf_opt_best (grid_id, intended_use, coverage_level, max_pct, year_min, "
         "year_max, n_policies, best_win_rate, best_win_combo, best_win_props, "
         "best_win_avg_net, best_net, best_net_combo, best_net_props, "
         "best_net_win_rate, median_net, pct_positive, best_win_rate_sum, "
         "best_net_rate_sum, top_json, source, fetched_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (grid_id, use, cov, 2006, 2024, 59536, win,
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (grid_id, use, cov, 60, 2006, 2025, 59536, win,
          json.dumps(win_combo) if isinstance(win_combo, list) else win_combo,
          json.dumps(win_props) if isinstance(win_props, list) else win_props,
          win_net, net,
@@ -714,7 +714,13 @@ def test_rate_sum_column_absent_is_graceful():
     conn.execute("CREATE TABLE prf_grid_county (grid_id INTEGER, state TEXT, "
                  "county_fips TEXT, county_name TEXT, source TEXT)")
     conn.execute("INSERT INTO prf_grid_county VALUES (1,'WA','53047','Okanogan','x')")
-    conn.execute("INSERT INTO prf_opt_best VALUES (1,'Grazing',0.9,0.5,'[]','[]',0,0.2,"
+    # NO max_pct here on purpose: this table is the LEGACY shape, and the point of the
+    # test is that a catalog.db predating a column still renders. Named columns rather
+    # than positional, so the row cannot silently re-align if the shape changes again.
+    conn.execute("INSERT INTO prf_opt_best (grid_id, intended_use, coverage_level, "
+                 "best_win_rate, best_win_combo, best_win_props, best_win_avg_net, "
+                 "best_net, best_net_combo, best_net_props, best_net_win_rate) "
+                 "VALUES (1,'Grazing',0.9,0.5,'[]','[]',0,0.2,"
                  "'[\"JUL-AUG\"]','[100]',0.4)")
     conn.commit()
     cell = build_opt_payload(conn)["counties"]["53047"]["Grazing"]["0.9"]

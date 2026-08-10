@@ -911,8 +911,10 @@ def test_both_win_rate_and_return_are_shown_whichever_metric_is_selected(merged)
     html = render_prf_page_html(build_prf_page_payload(merged),
                                 d3_js="", topojson_js="", atlas={})
     assert "function policyLine(gd, cbv)" in html
-    assert 'fmtWin(p.win), fmtNet(p.net) + " per $1"' in html          # win selected
-    assert 'fmtNet(p.net) + " per $1", fmtWin(p.win) + " of years"' in html   # dollars selected
+    # the SAME phrasing for each quantity in both views — only the order changes, so a
+    # reader comparing the two views sees one difference (the policy) and not three
+    assert 'var wins = "wins " + fmtWin(p.win) + " of years";' in html
+    assert 'var bits = (metric === "win") ? [wins, per1] : [per1, wins];' in html
     assert "fmtAcre(acre)" in html                                      # per-acre in both
     # fmtAcre already ends in "/ac"; appending another gave "$4.43/ac/ac" on the win view
     assert 'fmtAcre(acre) + "/ac"' not in html

@@ -1477,7 +1477,7 @@ var DATA = __PAYLOAD__;
       win:  wantWin ? gd.win : gd.net_win,
       net:  wantWin ? gd.win_net : gd.net,
       pol:  pol,
-      kind: wantWin ? "best win rate" : "best return"
+      kind: wantWin ? "chosen for win rate" : "chosen for return"
     };
   }
   // One policy's numbers, in the order the selection cares about: the selected quantity
@@ -1487,9 +1487,13 @@ var DATA = __PAYLOAD__;
     var p = policyFor(gd);
     if (!p) return null;
     var acre = acreFrom(p.net, cbv);
-    var bits = (metric === "win")
-      ? [fmtWin(p.win), fmtNet(p.net) + " per $1"]
-      : [fmtNet(p.net) + " per $1", fmtWin(p.win) + " of years"];
+    // ONE vocabulary for each quantity, in both views. The win rate used to print bare on
+    // the win view ("best win rate: 84.2%") and as "68.4% of years" on the dollar view — the
+    // same measure in two different phrasings, which reads as two unrelated measures and
+    // hides the only thing that actually differs: they belong to different allocations.
+    var wins = "wins " + fmtWin(p.win) + " of years";
+    var per1 = fmtNet(p.net) + " per $1";
+    var bits = (metric === "win") ? [wins, per1] : [per1, wins];
     if (acre !== null) bits.splice(metric === "win" ? 2 : 1, 0, fmtAcre(acre));  // carries /ac
     return p.kind + ": " + bits.join(" &middot; ") + " &mdash; " + esc(comboStr(p.pol));
   }

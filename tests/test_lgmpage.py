@@ -564,3 +564,28 @@ def test_ladder_rows_refuse_to_recommend_a_rung_when_unpooled(unpooled_curve):
     assert "max return per $1" not in marks
     assert "max protection" not in marks
     assert marks.count("least-bad rung — still negative") == 1
+
+
+def test_the_default_ration_is_the_declared_one_and_the_page_says_so():
+    """The section opens with every box on RMA's declared ration, so the first thing a reader
+    sees is gap 0.000 / correlation 1.0000 / 0.00% untracked. That is the correct identity, and
+    it is visually identical to a calculator that silently failed. Two things must hold: the
+    default really is the identity (so the guard fires), and the page carries an explanation.
+    """
+    import inspect
+
+    from src import lgm, lgmpage
+
+    for cc, tc in sorted(lgm.DECLARED_RATION):
+        insured = lgm.ration_for(cc, tc)
+        # No values supplied == what the number_inputs hold before anyone touches them.
+        actual = lgmpage.ration_from_inputs(cc, tc, {})
+        for field in ("corn_bu", "soybean_meal_ton", "feeder_cwt", "output_cwt"):
+            assert getattr(actual, field) == getattr(insured, field), (
+                f"{cc}/{tc} {field}: the default box value must be RMA's declared ration"
+            )
+
+    src = inspect.getsource(lgmpage._render_ration)
+    assert "RATION_IDENTITY_NOTE" in src, "the identity case must be explained, not left bare"
+    note = lgmpage.RATION_IDENTITY_NOTE
+    assert "1.0000" in note and "not a failed calculation" in note

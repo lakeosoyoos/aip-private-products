@@ -262,6 +262,14 @@ SWINE_NO_RISK_LAYER = (
     "what it keeps."
 )
 
+RATION_IDENTITY_NOTE = (
+    "**These boxes start on RMA's declared ration, so the numbers below are currently "
+    "comparing that ration to itself.** A zero gap and a 1.0000 correlation are the correct "
+    "answer to the question as posed — an operation that feeds exactly what RMA declares has "
+    "no ration basis risk by construction — not a failed calculation. Change a box above to "
+    "what the operation actually feeds and the three layers start measuring something."
+)
+
 
 # ---------------------------------------------------------------------------
 # Head-to-head, on realized experience
@@ -1266,6 +1274,12 @@ def _render_ration(st) -> None:
     verdict = div.verdict
     (st.success if "on the declared" in verdict
      else st.info if div.eliminable else st.warning)(f"**{verdict}**")
+
+    # The section opens on the declared ration, which makes every output an identity: gap
+    # 0.000, correlation 1.0000, untracked variance 0.00%. That is right, and it looks exactly
+    # like a calculator that failed to run. Say which one it is before the reader guesses.
+    if all(abs(d) < 1e-9 for d in div.deltas.values()):
+        st.caption(RATION_IDENTITY_NOTE)
 
     delta_rows = []
     for leg, delta in div.deltas.items():

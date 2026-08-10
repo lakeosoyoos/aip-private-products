@@ -43,6 +43,49 @@ st.set_page_config(
     layout="wide",
 )
 
+# Tab depth by colour. The app nests one level -- product tabs (Row Crop, PRF, LRP, DRP, LGM)
+# each containing view tabs -- and Streamlit renders both identically, so "which level am I
+# on?" is answerable only by reading the labels. BLUE is the product level, GREEN the view
+# level within it.
+#
+# Nesting is what the selector keys off: `.stTabs .stTabs` matches only a tab list that is
+# itself inside a tab list, so the rule cannot be defeated by tab order or label text, and a
+# third level (none today) would inherit green rather than silently reading as top level.
+# Colours carry a weight change too -- an active tab is bolder as well as coloured -- so the
+# distinction survives greyscale and the common forms of colour blindness.
+st.markdown("""
+<style>
+  :root { --tab-main: #1f6feb; --tab-sub: #1a7f37; }
+
+  /* SELECTORS VERIFIED AGAINST THE RENDERED DOM, not guessed from an older Streamlit. This
+     version emits div[data-testid="stTab"] with role="tab" and a child
+     div.react-aria-SelectionIndicator for the underline -- there is no [data-baseweb="tab"]
+     and no [data-baseweb="tab-highlight"], so the obvious selectors match nothing and fail
+     silently. If a Streamlit upgrade changes this, the tabs go back to one colour rather
+     than breaking; tests/test_tab_theme.py pins the selectors so that is caught. */
+
+  /* level 1 — product */
+  .stTabs [data-testid="stTab"][aria-selected="true"] { color: var(--tab-main); }
+  .stTabs [data-testid="stTab"][aria-selected="true"] .react-aria-SelectionIndicator {
+      background-color: var(--tab-main);
+  }
+  .stTabs [data-testid="stTab"]:hover { color: var(--tab-main); }
+
+  /* level 2 — view within a product. Same properties; the extra .stTabs wins on specificity. */
+  .stTabs .stTabs [data-testid="stTab"][aria-selected="true"] { color: var(--tab-sub); }
+  .stTabs .stTabs [data-testid="stTab"][aria-selected="true"] .react-aria-SelectionIndicator {
+      background-color: var(--tab-sub);
+  }
+  .stTabs .stTabs [data-testid="stTab"]:hover { color: var(--tab-sub); }
+  /* Size is set on BOTH levels, not just the sub. Styling only the sub with a rem value
+     made it LARGER than the parent -- the theme default is 14px and 0.94rem is 15.04px --
+     which inverted the hierarchy the colour was meant to reinforce. Stating both removes
+     the dependency on whatever the default happens to be. */
+  .stTabs [data-testid="stTab"] { font-size: 0.95rem; }
+  .stTabs .stTabs [data-testid="stTab"] { font-size: 0.85rem; }
+</style>
+""", unsafe_allow_html=True)
+
 # Which catalog the app reads, in priority order:
 #   1. AIP_DB_PATH        — a verification run pointing at a copy with synthetic rows
 #   2. data/catalog_app.db — the SHIPPED slim DB (scripts/build_app_db.py). The working
@@ -276,17 +319,146 @@ def _tab_row_crop(mtime: float) -> None:
         "basis-risk calculator, product table, coverage-stack analysis, and the "
         "SERFF filing history behind it."
     )
-    sub = st.tabs(["Map", "My Farm", "Products", "Stack", "SERFF Filings"])
+    sub = st.tabs(["Prospects", "Map", "My Farm", "Products", "Stack", "SERFF Filings"])
     with sub[0]:
-        _tab_map(mtime)
+        _tab_prospects(mtime)
     with sub[1]:
-        _tab_farm()
+        _tab_map(mtime)
     with sub[2]:
-        _tab_products(mtime)
+        _tab_farm()
     with sub[3]:
-        _tab_stack(mtime)
+        _tab_products(mtime)
     with sub[4]:
+        _tab_stack(mtime)
+    with sub[5]:
         _tab_serff(mtime)
+
+
+def _tab_prospects(mtime: float) -> None:
+    """Ranked prospect list — the opportunity/basis-risk join, as a table.
+
+    Deliberately not a map. The question "where should we sell this" needs two numbers at once
+    (how much subsidy is unclaimed, and whether the band would actually pay there) and a
+    choropleth shows one layer at a time. Lazy import and fully guarded, like the other
+    analytic sub-tabs: this pulls in the basis-risk tables and must not take Row Crop down.
+    """
+    try:
+        from src.rowcropprospects import SORTS, axes, find_prospects
+    except Exception as exc:                            # pragma: no cover - import guard
+        st.error(f"The prospect list could not be loaded: {exc}")
+        return
+
+    st.subheader("Prospects — where the unclaimed subsidy is, and where the band works")
+    st.caption(
+        "Every county x crop x band cell, ranked. **Unclaimed subsidy** is unsold eligible "
+        "acres x the subsidy a buyer captures per acre — the federal dollars leaving the "
+        "county unused. The basis-risk screen is the other half: a large unclaimed figure "
+        "where the county index misses most real losses is not a prospect, it is a "
+        "cancellation waiting to happen."
+    )
+
+    conn = _conn()
+    try:
+        ax = axes(conn)
+    except Exception as exc:
+        st.error(f"Could not read the opportunity tables: {exc}")
+        return
+    if not ax["crops"]:
+        st.info("rowcrop_unclaimed is not loaded in this database.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    states = c1.multiselect("States", ax["states"], default=[],
+                            help="Empty = the whole country.")
+    crops = c2.multiselect("Crops", ax["crops"], default=[])
+    bands = c3.multiselect("Bands", ax["bands"], default=[])
+
+    c4, c5, c6, c7 = st.columns([1.1, 1.1, 1.1, 1.2])
+    min_acres = c4.number_input("Min unsold acres", 0, 500_000, 5_000, step=1_000,
+                                help="Filters out cells too small to be worth a call.")
+    max_miss = c5.slider(
+        "Max miss rate", 0.05, 1.0, 0.30, 0.05, format="%.0f%%",
+        help="Screened on the PESSIMISTIC correlation (rho 0.35), not the 0.70 reference — "
+             "the one empirical check we have says the real miss rate sits at that end. "
+             "Screening on the optimistic figure passes exactly the cells most likely to "
+             "disappoint.")
+    max_pen = c6.slider("Max penetration", 0.0, 1.0, 1.0, 0.05, format="%.0f%%",
+                        help="Lower = more greenfield. 1.0 disables the filter.")
+    sort = c7.selectbox("Rank by", list(SORTS), index=0,
+                        format_func=lambda k: SORTS[k][1])
+
+    c8, c9 = st.columns(2)
+    show_unknown = c8.checkbox(
+        "Include cells with no basis estimate", value=False,
+        help="MCO, and crops outside Corn/Soybeans/Wheat/Cotton. Shown as unknown — never "
+             "as low-risk.")
+    conservative = c9.checkbox(
+        "Use the worst trigger variant", value=False,
+        help="ECO is sold at 95% and 90% and the Summary of Business does not say which a "
+             "county bought. Off = the representative ECO95 the rest of the app uses; on = "
+             "the ECO90 floor, which almost nothing survives.")
+
+    try:
+        res = find_prospects(
+            conn, states=states or None, crops=crops or None, bands=bands or None,
+            min_acres=float(min_acres),
+            max_miss=None if max_miss >= 1.0 else float(max_miss),
+            max_penetration=None if max_pen >= 1.0 else float(max_pen),
+            include_unknown_basis=show_unknown, conservative=conservative,
+            sort=sort, limit=500)
+    except Exception as exc:
+        st.error(f"The prospect query failed: {exc}")
+        return
+
+    if not res.rows:
+        st.warning(
+            f"No cells pass. {res.total_cells:,} were scanned — loosen the miss-rate or "
+            f"acreage filter. At the pessimistic correlation only ECO95 clears a 30% screen "
+            f"in any quantity; SCO and STAX effectively never do.")
+        return
+
+    st.success(
+        f"**{len(res.rows):,} cells**, ${res.total_unclaimed:,.0f} of unclaimed subsidy "
+        f"between them — out of {res.total_cells:,} scanned."
+        + (f" {res.unknown_basis:,} cells have no basis estimate and are excluded."
+           if not show_unknown and res.unknown_basis else ""))
+
+    import pandas as pd
+    df = pd.DataFrame([{
+        "State": p.state,
+        "County": p.county_name or p.county_fips,
+        "FIPS": p.county_fips,
+        "Crop": p.crop,
+        "Band": p.band,
+        "Unsold acres": round(p.unsold_acres),
+        "Penetration": p.penetration,
+        "Subsidy $/ac": p.sub_per_acre,
+        "Unclaimed subsidy": round(p.unclaimed_subsidy),
+        "Miss rate": p.miss_rate,
+        "Miss @ rho 0.35": p.miss_rate_rho_lo,
+        "Grade": p.grade or "—",
+        "Basis band": p.basis_band or "unmeasured",
+    } for p in res.rows])
+    st.dataframe(
+        df, width="stretch", hide_index=True,
+        column_config={
+            "Penetration": st.column_config.NumberColumn(format="%.1f%%"),
+            "Miss rate": st.column_config.NumberColumn(format="%.1f%%"),
+            "Miss @ rho 0.35": st.column_config.NumberColumn(format="%.1f%%"),
+            "Subsidy $/ac": st.column_config.NumberColumn(format="$%.2f"),
+            "Unsold acres": st.column_config.NumberColumn(format="%d"),
+            "Unclaimed subsidy": st.column_config.NumberColumn(format="$%d"),
+        })
+    st.download_button(
+        "Download this list (CSV)", df.to_csv(index=False).encode(),
+        file_name="rowcrop_prospects.csv", mime="text/csv")
+    st.caption(
+        "**Miss rate** is the share of years a farm here has a loss and the band pays "
+        "nothing, for a TYPICAL farm — the *rho 0.35* column is the same figure at the "
+        "pessimistic correlation. Neither is farm-specific: a producer's own answer comes "
+        "from **My Farm**, which measures their correlation from their own APH instead of "
+        "assuming it. Unclaimed subsidy is computed from RMA's Summary of Business, not "
+        "estimated.")
 
 
 def _tab_farm() -> None:

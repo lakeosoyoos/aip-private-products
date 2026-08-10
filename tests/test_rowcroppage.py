@@ -557,17 +557,36 @@ def test_the_optimism_caveat_is_emitted_by_the_real_farm_report_render():
     )
 
 
-def test_the_app_renders_the_farm_calculator_and_not_the_standalone_page():
-    """Pins the reachability fact the test above depends on, so that if the opportunity map is
-    ever wired into the app the pairing gets revisited deliberately rather than by surprise."""
+@skip_no_app_db
+def test_the_opportunity_map_is_in_the_app_and_carries_the_caveat():
+    """This test previously asserted the OPPOSITE — that the opportunity map was NOT in the
+    app — with a failure message reading: if it is ever wired in, check that it carries the
+    optimism note too. It has now been wired in, so performing that check is what this test
+    does.
+
+    Both surfaces must carry the caveat: the farm calculator (tested above) and this map. A
+    reader can arrive at a miss rate from either, and the qualification is not optional on
+    one of them.
+    """
+    import json
+    import sqlite3
     from pathlib import Path
 
-    app = Path(__file__).resolve().parents[1] / "streamlit_app.py"
-    text = app.read_text()
-    assert "render_farm_calculator" in text
-    assert "render_rowcrop_page_html" not in text, (
-        "the opportunity map is now in the app -- check that it carries the optimism note too"
-    )
+    from src.rowcroppage import build_rowcrop_page_payload
+
+    app = (Path(__file__).resolve().parents[1] / "streamlit_app.py").read_text()
+    assert "render_rowcrop_page_html" in app, "the opportunity map must be reachable"
+    assert "render_farm_calculator" in app, "the farm calculator must stay reachable"
+    # the render_ver cache-buster has to watch rowcroppage, or a code-only change to the map
+    # is served stale from a warm container
+    assert "src.rowcroppage" in app
+
+    conn = sqlite3.connect(f"file:{_APP_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    payload = build_rowcrop_page_payload(conn)
+    note = payload["basis_meta"].get("optimism_note") or ""
+    assert "optimistic" in note.lower(), "the map's payload lost the optimism caveat"
+    assert json.dumps(payload)          # serialisable, as the renderer requires
 
 
 def test_the_rho_swing_sentence_is_read_from_the_data_not_typed_in():

@@ -178,10 +178,11 @@ def _render_ver() -> float:
     would serve the old map HTML on a reused container. Git checkout stamps a fresh mtime each
     deploy, so this busts the cache whenever the map code changes."""
     import src.prfpage
+    import src.rowcroppage
     import src.webmap
     try:
         return max(os.path.getmtime(m.__file__)
-                   for m in (src.prfpage, src.webmap))
+                   for m in (src.prfpage, src.rowcroppage, src.webmap))
     except OSError:
         return 0.0
 
@@ -248,6 +249,27 @@ def _prf_page_html(db_mtime: float, render_ver: float, seed_mtime: float) -> str
         d3_js=assets["d3.v7.min.js"],
         topojson_js=assets["topojson-client.min.js"],
         atlas=atlas,
+    )
+
+
+@st.cache_data(show_spinner="Building the row-crop opportunity map…")
+def _rowcrop_opportunity_html(db_mtime: float, render_ver: float, seed_mtime: float) -> str:
+    """The row-crop opportunity choropleth — unclaimed subsidy and seven sibling metrics.
+
+    This page existed for a long time and was reachable only as a file: `generate()` wrote it
+    to output/rowcrop_page.html and streamlit_app.py never called the renderer, so the tab a
+    user opens showed the AVAILABILITY map instead and the opportunity analysis was invisible
+    in the app. Same cache-key discipline as _prf_page_html: DB mtime, render-code version and
+    commission-seed mtime, none of them underscore-prefixed.
+    """
+    from src.rowcroppage import build_rowcrop_page_payload, render_rowcrop_page_html
+
+    assets = ensure_assets()
+    return render_rowcrop_page_html(
+        build_rowcrop_page_payload(_conn()),
+        assets["d3.v7.min.js"],
+        assets["topojson-client.min.js"],
+        json.loads(assets["counties-10m.json"]),
     )
 
 
@@ -319,19 +341,40 @@ def _tab_row_crop(mtime: float) -> None:
         "basis-risk calculator, product table, coverage-stack analysis, and the "
         "SERFF filing history behind it."
     )
-    sub = st.tabs(["Prospects", "Map", "My Farm", "Products", "Stack", "SERFF Filings"])
+    sub = st.tabs(["Prospects", "Opportunity map", "Availability map", "My Farm",
+                   "Products", "Stack", "SERFF Filings"])
     with sub[0]:
         _tab_prospects(mtime)
     with sub[1]:
-        _tab_map(mtime)
+        _tab_opportunity(mtime)
     with sub[2]:
-        _tab_farm()
+        _tab_map(mtime)
     with sub[3]:
-        _tab_products(mtime)
+        _tab_farm()
     with sub[4]:
-        _tab_stack(mtime)
+        _tab_products(mtime)
     with sub[5]:
+        _tab_stack(mtime)
+    with sub[6]:
         _tab_serff(mtime)
+
+
+def _tab_opportunity(mtime: float) -> None:
+    """The opportunity choropleth — the map form of what Prospects lists as a table."""
+    st.subheader("Opportunity map — unclaimed subsidy by county")
+    st.caption(
+        "The same numbers **Prospects** ranks, drawn instead of listed. Pick a metric from "
+        "**Show** inside the map: unclaimed subsidy total or per eligible acre, band "
+        "penetration, producer value per acre, producer return per $1 of premium, agency "
+        "commission per acre and unclaimed commission, and the DIVERGENCE view — where the "
+        "agency's best county and the producer's best county are not the same place. Zoom "
+        "US → state → county; every county's tooltip carries its basis risk."
+    )
+    try:
+        st.iframe(_rowcrop_opportunity_html(mtime, _render_ver(), _prf_seed_mtime()),
+                  height=860)
+    except Exception as exc:
+        st.error(f"The opportunity map could not be rendered — {type(exc).__name__}: {exc}")
 
 
 def _tab_prospects(mtime: float) -> None:

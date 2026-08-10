@@ -216,3 +216,48 @@ def test_the_write_still_works_when_not_readonly(tmp_path, monkeypatch):
                           "cme_put": 9.0, "gap": 4.0, "gap_pct": 1.3}])
     assert L.record_gap_snapshot(grid, "feeder", __import__("datetime").date(2026, 8, 8)) == 1
     assert target.exists()
+
+
+# ── the gap_pct unit contract ────────────────────────────────────────────────
+
+def test_gap_pct_is_a_percent_in_build_grid():
+    """build_grid stores `round(gap_pct * 100, 3)`. Everything downstream depends on it."""
+    import pandas as pd
+    from pathlib import Path
+
+    cache = sorted(Path("lrp_cache").glob("lrp_feeder_*.csv"))
+    if not cache:
+        pytest.skip("no cached RMA day to build a grid from")
+    g = pd.DataFrame(L.build_grid(pd.read_csv(cache[-1]), futures_curve=None,
+                                  r=0.04, base_vol=0.20))
+    live = g[g["live"] & (g["coverage_price"] > 0) & (g["gap"].abs() > 1e-6)]
+    assert not live.empty
+    # build_grid rounds to 3 decimals, so compare on that grain rather than relatively —
+    # a relative tolerance is tighter than the rounding itself for near-zero cells.
+    for _, r in live.iterrows():
+        assert r["gap_pct"] == pytest.approx(
+            r["gap"] / r["coverage_price"] * 100, abs=0.001)
+
+
+def test_the_history_file_uses_the_same_gap_pct_units_as_the_grid():
+    """RICHNESS DIVIDES ONE BY THE OTHER, so a unit mismatch is silent and total.
+
+    This happened: scripts/rebuild_gap_history.py recomputed gap_pct as gap/coverage_price
+    — a FRACTION — while build_grid emits a PERCENT. Every richness value came out 100x too
+    large, the heatmap filled with BUY, and nothing raised an error because both numbers are
+    individually plausible. Guarding the ratio's two inputs is the only place this is
+    catchable.
+    """
+    import pandas as pd
+    from pathlib import Path
+
+    p = Path(L.GAP_HISTORY_FILE)
+    if not p.exists():
+        pytest.skip("no gap history recorded yet")
+    d = pd.read_csv(p)
+    d = d[(d["coverage_price"] > 0) & (d["gap"].abs() > 1e-6)]
+    assert not d.empty
+    implied = (d["gap_pct"] / (d["gap"] / d["coverage_price"])).median()
+    assert implied == pytest.approx(100.0, rel=0.02), (
+        f"history gap_pct is {implied:.1f}x the fraction; build_grid emits 100x (percent). "
+        f"Richness compares them directly, so this ratio must be 100.")

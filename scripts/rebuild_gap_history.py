@@ -51,7 +51,10 @@ def rebuild(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     gross = out["producer_prem"].astype(float)
     out["producer_prem"] = (gross * (1 - subsidy)).round(4)
     out["gap"] = (out["cme_put"].astype(float) - out["producer_prem"]).round(4)
-    out["gap_pct"] = (out["gap"] / out["coverage_price"].astype(float)).round(4)
+    # PERCENT, matching build_grid's `round(gap_pct * 100, 3)`. Writing a FRACTION
+    # here is what silently inflated every richness value by 100x: the ratio compares
+    # this column against build_grid's, and both numbers look plausible alone.
+    out["gap_pct"] = (out["gap"] / out["coverage_price"].astype(float) * 100).round(3)
 
     stats = {
         "rows": len(out),

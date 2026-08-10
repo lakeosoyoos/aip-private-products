@@ -857,3 +857,34 @@ def test_render_warns_that_use_does_not_move_the_rate_metrics(merged):
                                 d3_js="", topojson_js="", atlas={})
     assert html.count('Intended use does not move this metric') == 2   # win + net
     assert 'data-m="win"' in html and 'data-m="net"' in html
+
+
+def test_fixed_unit_quantities_never_go_through_the_metric_dependent_formatter(merged):
+    """fmtShort() formats according to the SELECTED metric — %, $ per $1, or $/acre. That is
+    correct for the value the map is currently showing, and wrong for anything whose unit is
+    fixed regardless of selection.
+
+    The grid tooltip printed `fmtShort(gd.win)`. gd.win is a win RATE always, so a 62% win
+    rate rendered as "$0.62" under $/acre, $ per $1 and commission, and as "$1" under CBV.
+    Nothing looked broken — it looked like a dollar figure, because it was formatted as one.
+
+    Asserted structurally rather than by rendering, because the bug lives in which formatter
+    a call site chose, and that is exactly what the source shows.
+    """
+    import re
+
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    for call in re.findall(r"fmtShort\(([^)]*)\)", html):
+        arg = call.strip()
+        assert not re.search(r"\.(win|net|win_net|net_win)\b", arg), (
+            f"fmtShort({arg}) formats a fixed-unit quantity with the selected metric's units; "
+            f"use fmtWin/fmtNet"
+        )
+
+
+def test_the_grid_tooltip_prints_its_win_rate_as_a_percentage(merged):
+    """The specific regression: the grid tooltip's 'best win' must go through fmtWin."""
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    assert "best win ' + fmtWin(gd.win)" in html

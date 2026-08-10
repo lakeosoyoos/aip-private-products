@@ -1705,7 +1705,13 @@ var DATA = __PAYLOAD__;
       h += '<div class="t-line">County Base Value is published per COUNTY, so every grid ' +
            'in this county shares it.</div>';
     } else if (gd) {
-      h += '<div class="t-line">best win ' + (gd.win === null ? "&mdash;" : fmtShort(gd.win)) +
+      // fmtWin, NOT fmtShort. fmtShort formats according to the SELECTED metric, which is
+      // right for the value on the line above (that value IS the selected metric) and wrong
+      // here: gd.win is a win RATE whatever the map is currently showing. Through fmtShort a
+      // 62% win rate printed as "$0.62" under $/acre, $/1 and commission, and as "$1" under
+      // CBV — correct-looking, wrongly denominated, and only accidentally right when the
+      // selected metric happened to be win.
+      h += '<div class="t-line">best win ' + fmtWin(gd.win) +
            ' &middot; ' + esc(comboStr(gd.np !== undefined ? gd.np : gd.wp)) + '</div>';
     } else {
       h += '<div class="t-line">No swept result for this grid at the current selection.</div>';

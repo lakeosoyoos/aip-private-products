@@ -26,6 +26,10 @@ DROP_TABLES = [
     "prf_grid_index",   # ~11.5M rows: the VI/RI national index history (optimizer input)
     "prf_grid_rate",    # ~740k rows: per-grid premium rates (optimizer input)
     "prf_index_hash",   # change-detection bookkeeping for the monthly re-score
+    # The pre-cap snapshot of prf_opt_best, kept locally so the actuarial-cap change can be
+    # measured against what it replaced. 194,725 rows of superseded results: useful to have,
+    # never something the app should read or a user should be able to reach.
+    "prf_opt_best_pre_cap",
     # DRP's two bulk inputs -- the exact analogue of prf_grid_index/prf_grid_rate above.
     # Together they are ~610 MB of the working DB and 99.5% of DRP's footprint; the app
     # would be unshippable with either. The DRP tab must read the dimension tables that DO
@@ -127,6 +131,47 @@ _ALIAS_COLS = ["year_min", "year_max", "n_policies", "best_win_rate", "best_win_
                "best_win_rate_sum", "best_net_rate_sum"]
 
 
+def shrink_prf_max_pct(conn) -> dict:
+    """Collapse prf_max_pct to the grain the APP reads. ~34 MB.
+
+    The harvested table is county x intended-use x irrigation x INTERVAL -- 142,125 rows --
+    because that is the grain RMA publishes the cap at, and the sweep wants it that way. But
+    every row also carries the full statement_text, and there are only EIGHT distinct
+    statements in the country, so the shipped copy was storing the same sentence 142,125
+    times: 28 MB of table plus 6 MB of index, more than a third of the whole artifact.
+
+    src/prfpage.py reads exactly one thing from it:
+
+        SELECT state_code || county_code, MIN(max_pct) ... GROUP BY state_code, county_code
+
+    so the shipped copy is that rollup -- one row per county, 3,071 of them -- plus the
+    conditional flag and statement id for provenance. The full-grain table stays in the
+    working DB, which is where the sweep reads it.
+
+    MIN, matching the reader and src/prfsweep.grid_caps(): where a county's cap varies by
+    interval, the conservative value is the one that keeps a recommendation buyable.
+    """
+    before = conn.execute("SELECT COUNT(*) FROM prf_max_pct").fetchone()[0]
+    conn.executescript("""
+        CREATE TABLE _prf_max_pct_county AS
+            SELECT state_code, county_code, MIN(max_pct) AS max_pct,
+                   MAX(is_conditional) AS is_conditional,
+                   MIN(statement_id)   AS statement_id,
+                   MIN(reinsurance_year) AS reinsurance_year
+              FROM prf_max_pct
+             GROUP BY state_code, county_code;
+        DROP TABLE prf_max_pct;
+        ALTER TABLE _prf_max_pct_county RENAME TO prf_max_pct;
+        CREATE INDEX ix_prf_max_pct_county ON prf_max_pct(state_code, county_code);
+    """)
+    after = conn.execute("SELECT COUNT(*) FROM prf_max_pct").fetchone()[0]
+    # The reader's own query must still return every county it did before.
+    if after < 3000:
+        sys.exit(f"REFUSING: prf_max_pct rolled up to {after} counties, expected ~3,071. "
+                 f"Check scripts/build_app_db.py:shrink_prf_max_pct.")
+    return {"before": before, "after": after}
+
+
 def dedupe_prf_opt_best(conn) -> dict:
     """Collapse prf_opt_best's redundant intended_use rows behind a view. ~36 MB.
 
@@ -152,6 +197,13 @@ def dedupe_prf_opt_best(conn) -> dict:
        correctness regression disguised as a space saving, so presence is stored explicitly
        and the view returns nothing where Haying was never offered.
 
+    EVERY JOIN HERE MATCHES ON max_pct AS WELL. prf_opt_best gained the actuarial cap in its
+    key, so a grid straddling a cap boundary has two or three rows per (grid, coverage). Left
+    on the old two-column join these queries cross-product across cap variants and compare
+    Grazing-at-50% against Haying-Irrigated-at-60%: the guard reported 6,410 differences where
+    the true number is ZERO. It refused to dedupe rather than alias bad data, which is the
+    behaviour wanted -- but the comparison itself was wrong, not the data.
+
     Refuses rather than guesses if the alias assumption stops holding on future data.
     """
     cols = [r[1] for r in conn.execute("PRAGMA table_info(prf_opt_best)")]
@@ -164,7 +216,7 @@ def dedupe_prf_opt_best(conn) -> dict:
     # this stops being lossless, and we must not find that out silently.
     bad = conn.execute(
         f"SELECT COUNT(*) FROM prf_opt_best a JOIN prf_opt_best b"
-        f"  ON a.grid_id=b.grid_id AND a.coverage_level=b.coverage_level"
+        f"  ON a.grid_id=b.grid_id AND a.coverage_level=b.coverage_level AND a.max_pct=b.max_pct"
         f" WHERE a.intended_use='Grazing' AND b.intended_use='Haying-Irrigated'"
         f"   AND NOT ({eq})").fetchone()[0]
     if bad:
@@ -181,16 +233,16 @@ def dedupe_prf_opt_best(conn) -> dict:
         -- Haying rows that genuinely differ from Grazing: stored, not aliased.
         CREATE TABLE _prf_hay_exc AS
             SELECT b.* FROM prf_opt_best b JOIN prf_opt_best a
-              ON a.grid_id=b.grid_id AND a.coverage_level=b.coverage_level
+              ON a.grid_id=b.grid_id AND a.coverage_level=b.coverage_level AND a.max_pct=b.max_pct
                  AND a.intended_use='Grazing'
              WHERE b.intended_use='Haying' AND NOT ({eq});
         -- Where Haying is OFFERED at all. Absence here means "not sold", never "same as Grazing".
         CREATE TABLE _prf_hay_has AS
-            SELECT grid_id, coverage_level FROM prf_opt_best WHERE intended_use='Haying';
+            SELECT grid_id, coverage_level, max_pct FROM prf_opt_best WHERE intended_use='Haying';
         DROP TABLE prf_opt_best;
-        CREATE INDEX _prf_canon_ix   ON _prf_canon(grid_id, coverage_level);
-        CREATE INDEX _prf_hay_has_ix ON _prf_hay_has(grid_id, coverage_level);
-        CREATE INDEX _prf_hay_exc_ix ON _prf_hay_exc(grid_id, coverage_level);
+        CREATE INDEX _prf_canon_ix   ON _prf_canon(grid_id, coverage_level, max_pct);
+        CREATE INDEX _prf_hay_has_ix ON _prf_hay_has(grid_id, coverage_level, max_pct);
+        CREATE INDEX _prf_hay_exc_ix ON _prf_hay_exc(grid_id, coverage_level, max_pct);
     """)
 
     def relabel(use):
@@ -205,9 +257,9 @@ def dedupe_prf_opt_best(conn) -> dict:
           UNION ALL
             SELECT {relabel('Haying')} FROM _prf_canon c
              WHERE EXISTS (SELECT 1 FROM _prf_hay_has h
-                            WHERE h.grid_id=c.grid_id AND h.coverage_level=c.coverage_level)
+                            WHERE h.grid_id=c.grid_id AND h.coverage_level=c.coverage_level AND h.max_pct=c.max_pct)
                AND NOT EXISTS (SELECT 1 FROM _prf_hay_exc e
-                            WHERE e.grid_id=c.grid_id AND e.coverage_level=c.coverage_level)
+                            WHERE e.grid_id=c.grid_id AND e.coverage_level=c.coverage_level AND e.max_pct=c.max_pct)
           UNION ALL
             SELECT {collist} FROM _prf_hay_exc;
     """)
@@ -251,11 +303,23 @@ def _row_counts(db: Path) -> dict:
         c.close()
 
 
+# Tables this script DELIBERATELY rolls up to a coarser grain on the way out. Their row count
+# is supposed to fall off a cliff exactly once -- on the build that introduces the rollup -- so
+# the collapse guard must not read that as data loss. Each has its own assertion inside its
+# shrink function, which is a tighter check than a percentage: shrink_prf_max_pct refuses if
+# the county count is not ~3,071, whereas the generic guard only knows the number went down.
+INTENTIONALLY_ROLLED_UP = {
+    "prf_max_pct",      # county x use x irrigation x interval -> one row per county
+}
+
+
 def check_no_collapse(prior: dict, now: dict, tolerance: float = SHRINK_TOLERANCE) -> list[str]:
     """Tables that lost more than `tolerance` of their rows since the last build."""
     bad = []
     for name, before in sorted(prior.items()):
         after = now.get(name)
+        if name in INTENTIONALLY_ROLLED_UP:
+            continue
         if after is None or before < SHRINK_FLOOR or before == 0:
             continue
         if after < before * (1.0 - tolerance):
@@ -302,6 +366,9 @@ def build(src: Path, out: Path, allow_shrink: bool = False) -> dict:
     conn.commit()
     # Must run BEFORE the VACUUM below, so the freed pages are actually reclaimed.
     deduped = dedupe_prf_opt_best(conn) if "prf_opt_best" in have else {}
+    if "prf_max_pct" in have:
+        r = shrink_prf_max_pct(conn)
+        print(f"  prf_max_pct: {r['before']:,} interval rows -> {r['after']:,} counties")
     conn.commit()
     # Ship in DELETE journal mode, not WAL. backup() inherits the working DB's WAL setting,
     # and a WAL-mode artifact is wrong for something that gets COMMITTED: its committed state

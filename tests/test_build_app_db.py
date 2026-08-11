@@ -41,3 +41,30 @@ def test_a_vanished_table_is_not_silently_ignored_by_the_shrink_check():
 
     assert check_no_collapse({"gone": 5000}, {}) == []
     assert "serff_filings" in REQUIRED or "sob_national" in REQUIRED
+
+
+def test_a_deliberate_rollup_is_exempt_from_the_collapse_guard():
+    """shrink_prf_max_pct takes prf_max_pct from 142,125 interval rows to 3,071 counties, by
+    design — the app reads only MIN(max_pct) per county and the harvest grain was 34 MB of
+    the artifact. The generic collapse guard saw a 98% loss and refused the build.
+
+    Exempting it is safe only because the rollup carries its own, TIGHTER assertion: it
+    refuses if the county count is not ~3,071, where the guard could only tell that the
+    number went down. That pairing is what this test pins.
+    """
+    import importlib.util
+    import inspect
+    import pathlib
+
+    spec = importlib.util.spec_from_file_location(
+        "_bad", pathlib.Path(__file__).resolve().parents[1] / "scripts/build_app_db.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    assert "prf_max_pct" in mod.INTENTIONALLY_ROLLED_UP
+    # exempt from the generic guard...
+    assert mod.check_no_collapse({"prf_max_pct": 142_125}, {"prf_max_pct": 3_071}) == []
+    # ...but any OTHER table collapsing that far still fails it
+    assert mod.check_no_collapse({"whatever": 142_125}, {"whatever": 3_071})
+    # ...and the rollup has its own floor
+    assert "REFUSING" in inspect.getsource(mod.shrink_prf_max_pct)

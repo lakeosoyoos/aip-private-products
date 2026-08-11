@@ -1067,39 +1067,42 @@ def test_a_commission_rate_is_never_borrowed_from_another_product(tmp_path):
         "instead of borrowing another product's card")
 
 
-def test_each_product_uses_ITS_OWN_A_and_O_category():
-    """One methodology, applied per product: find the product's own A&O row in the published
-    table, multiply by the SRA's 80% compensation cap, and leave it BLANK if it has no row.
+def test_each_product_uses_ITS_OWN_reinsurance_agreement():
+    """One methodology per product: the A&O rate from the agreement that governs it, times
+    that agreement's own compensation cap. Never one agreement's number applied to the other's
+    products — which is the mistake this has already made twice.
 
-    The two things this pins are the two ways it has already gone wrong.
+    CROP (SRA): PRF and row crop are both county-index AREA plans first sold after 2008, so
+    both take the 20.1% area row (not 18.5% revenue, which belongs to the underlying RP/YP
+    policy), times the SRA's 80% cap = 16.08%.
 
-    ROW CROP IS AN AREA PLAN, NOT A REVENUE PLAN. It briefly carried the 18.5% revenue rate,
-    which is the rate for the underlying RP/YP policy — not for SCO/ECO/STAX/MCO, which are
-    county-index endorsements first sold between 2015 and 2024. They take the same 20.1% row
-    PRF does: area plans not widely available in 2008.
-
-    LIVESTOCK GETS NOTHING. LRP/LGM/DRP are reinsured under the LPRA, which that table does
-    not cover. A blank is the honest output; substituting the top of the SRA range would be
-    inventing a rate and calling it published.
+    LIVESTOCK (LPRA): A&O is 22.2% by LPRA IV(b)(2)(D) — and the LPRA contains NO agent
+    compensation cap. The 80% limit, the scheme-or-device language and the "shall not pay"
+    clause are all SRA provisions, absent from the LPRA. So the livestock ceiling is the full
+    A&O, 22.2%, and it is HIGHER than the crop ceiling rather than lower.
     """
     for prod in ("PRF", "ROWCROP"):
         c = load_aip_commission(product=prod)
-        assert c["with_rate"] == len(c["aips"]) > 0
         for a in c["aips"]:
-            assert set(a["by_region"].values()) == {16.08}, f"{prod} should be 80% x 20.1%"
-            assert "20.1%" in a["notes"] and "CITED" in a["notes"]
+            assert set(a["by_region"].values()) == {16.08}, f"{prod} = 20.1% x 0.80"
+            assert "20.1%" in a["notes"] and "SRA" in a["notes"]
 
     for prod in ("LRP", "DRP", "LGM"):
         c = load_aip_commission(product=prod)
-        assert c["with_rate"] == 0, f"{prod} has no published A&O row and must stay blank"
-        assert c["aips"], f"{prod} should still list the AIPs"
-        assert "LPRA" in c["aips"][0]["notes"], "say WHY it is blank"
+        assert c["with_rate"] == len(c["aips"]) > 0, f"{prod} now has a cited rate"
+        for a in c["aips"]:
+            assert set(a["by_region"].values()) == {22.20}, f"{prod} = 22.2% x 1.00"
+            assert "LPRA" in a["notes"] and "22.2%" in a["notes"]
 
     raw = (Path(__file__).resolve().parents[1] / "data/seed/aip_commission.csv").read_text()
     up = raw.upper()
-    assert "III(A)(4)(B)" in up, "cite the SRA provision the 80% comes from"
-    assert "R45291" in up, "cite the table the A&O rates come from"
-    assert "METHODOLOGY" in up, "the rule must be written down, not just its outputs"
+    assert "III(A)(4)(B)" in up, "cite the SRA cap provision"
+    assert "IV(B)(2)(D)" in up, "cite the LPRA A&O provision"
+    assert "R45291" in up, "cite the table the crop A&O rates come from"
+    # the two judgement calls have to stay on the record
+    assert "NO AGENT-COMPENSATION CAP" in up, "say that the LPRA has no cap"
+    assert "23.35" in raw, "record the high-loss-ratio rate that is deliberately NOT used"
+    assert "17.76" in raw, "record what the SRA-analogy figure would have been"
 
 
 def test_a_card_with_no_product_column_serves_whoever_asked(tmp_path):

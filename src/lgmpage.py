@@ -94,6 +94,7 @@ from typing import Sequence
 import numpy as np
 
 from . import config, lgm
+from .prfpage import load_aip_commission
 from .webmap import STATE_FIPS
 
 # ---------------------------------------------------------------------------
@@ -806,7 +807,7 @@ def _mtime(path) -> float:
 # Section 1 — the ladder
 # ---------------------------------------------------------------------------
 
-def _render_ladder(st) -> None:
+def _render_ladder(st, lens: str = "buy") -> None:
     helpers = _streamlit_helpers()
     zips = cached_adm_zips()
 
@@ -950,6 +951,15 @@ def _render_ladder(st) -> None:
         return
     summary = objective_summary(curve)
     unit = lgm.COMMODITY_UNIT[cc]
+
+    # ONE CURVE, TWO READINGS. The agency view branches here rather than living in its own
+    # section, because it must price the SAME ladder the producer sees — same commodity,
+    # type, state, marketing plan and subsidy table. A second section rebuilding its own
+    # curve could disagree with this one, and the whole point of the divergence warning is
+    # that the two numbers describe one policy.
+    if lens == "sell":
+        _agency_table(st, curve, unit)
+        return
 
     if case is not None:
         st.caption(
@@ -1345,6 +1355,84 @@ def _render_ration(st) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+
+LGM_COMMISSION_NOTE = (
+    "**Commission is a percent of TOTAL premium, not of what the producer pays.** LGM's "
+    "ladder already carries the total, so no grossing-up is needed here — but it is why the "
+    "agency's best rung and the producer's best rung are not the same rung. Total premium "
+    "RISES as the deductible falls, so agency revenue is maximised at the LOWEST deductible, "
+    "while the producer's net expected gain peaks somewhere in the middle of the ladder. "
+    "That divergence is the point of showing this separately rather than as another column."
+)
+
+
+def _agency_table(st, curve, unit: str) -> None:
+    """What the agency earns across the rungs the producer is reading.
+
+    LGM had no agency figure at all, so this is a new metric rather than a re-sort. Commission
+    is a percent of TOTAL premium and LGM's ladder already carries the total, so unlike DRP
+    there is no grossing-up step — but that is also exactly why the two lenses point at
+    different rungs: total premium RISES as the deductible falls, so agency revenue is
+    maximised at the LOWEST rung while the producer's net expected gain peaks mid-ladder.
+    """
+    import pandas as pd
+
+    st.subheader("Sell — what the agency earns on this ladder")
+    comm = load_aip_commission(product="LGM")
+    rated = [a for a in comm["aips"] if a["by_region"] or a["pct"] is not None]
+    if not rated:
+        st.warning(
+            "No LGM commission rate on file. LGM is reinsured under the LPRA, whose A&O is "
+            "22.2% of net book premium (LPRA IV(b)(2)(D)) and which contains no agent "
+            "compensation cap. Enter your negotiated schedule in "
+            "`data/seed/aip_commission.csv` under product=LGM.")
+        return
+
+    def _rate(a):
+        vals = [v for v in (a["by_region"] or {}).values() if v is not None]
+        return (sum(vals) / len(vals)) if vals else a["pct"]
+
+    rates = [r for r in (_rate(a) for a in rated) if r is not None]
+    pct = sum(rates) / len(rates)
+    st.caption(
+        f"At **{pct:.2f}%** of total premium — the LPRA ceiling (22.2% A&O, no compensation "
+        f"cap in that agreement). Read it as *at most*: a negotiated rate normally sits below "
+        f"the ceiling.")
+
+    rows = [{
+        "Deductible": c.deductible,
+        "Total premium": c.total_premium,
+        "Producer premium": c.producer_premium,
+        "Agency commission": c.total_premium * pct / 100.0,
+        "Producer net expected gain": c.net_expected_gain,
+    } for c in curve]
+    if not rows:
+        st.info("The ladder produced no priced rungs for this selection.")
+        return
+
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, column_config={
+        "Deductible": st.column_config.NumberColumn(format="$%,.0f"),
+        "Total premium": st.column_config.NumberColumn(format="$%,.0f"),
+        "Producer premium": st.column_config.NumberColumn(format="$%,.0f"),
+        "Agency commission": st.column_config.NumberColumn(format="$%,.2f"),
+        "Producer net expected gain": st.column_config.NumberColumn(format="$%,.0f"),
+    })
+
+    best_a = max(rows, key=lambda r: r["Agency commission"])
+    best_p = max(rows, key=lambda r: r["Producer net expected gain"])
+    if best_a["Deductible"] != best_p["Deductible"]:
+        st.warning(
+            f"**These point at different rungs.** Agency revenue peaks at the "
+            f"${best_a['Deductible']:,.0f} deductible (${best_a['Agency commission']:,.2f}); "
+            f"the producer's net expected gain peaks at ${best_p['Deductible']:,.0f} "
+            f"(${best_p['Producer net expected gain']:,.0f}). Recommending the first while "
+            f"quoting the second is the conflict this lens exists to make visible.")
+    else:
+        st.success(
+            f"Both peak at the ${best_a['Deductible']:,.0f} deductible — no conflict on this "
+            f"selection.")
+
+
 def render() -> None:
     """Draw the LGM tab. streamlit_app.py calls this as `lgmpage.render()`.
 
@@ -1360,9 +1448,19 @@ def render() -> None:
         "declared feed cost."
     )
 
-    for name, fn in (("deductible ladder", _render_ladder),
-                     ("head-to-heads", _render_head_to_head),
-                     ("ration section", _render_ration)):
+    # WHOSE MONEY. Same split as the other four products. LGM's three existing sections are
+    # all producer-side; the agency section is new, and reads the SAME ladder rather than
+    # recomputing one, so the two lenses cannot disagree about the policy being priced.
+    lens = st.radio("Lens", ["Buy — producer", "Sell — agency"],
+                    horizontal=True, key="lgm_lens", label_visibility="collapsed")
+
+    buy = lens.startswith("Buy")
+    sections = ([("deductible ladder", _render_ladder),
+                 ("head-to-heads", _render_head_to_head),
+                 ("ration section", _render_ration)] if buy else
+                [("agency view", lambda st_: _render_ladder(st_, lens="sell"))])
+
+    for name, fn in sections:
         st.divider()
         try:
             fn(st)

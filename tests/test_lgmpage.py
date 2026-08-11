@@ -589,3 +589,63 @@ def test_the_default_ration_is_the_declared_one_and_the_page_says_so():
     assert "RATION_IDENTITY_NOTE" in src, "the identity case must be explained, not left bare"
     note = lgmpage.RATION_IDENTITY_NOTE
     assert "1.0000" in note and "not a failed calculation" in note
+
+
+def test_the_agency_view_prices_the_SAME_ladder_the_producer_reads():
+    """LGM had no agency figure at all, so this is a new metric rather than a re-sort.
+
+    It branches inside _render_ladder, after the curve is priced, rather than living in its
+    own section. That is deliberate: a separate section would rebuild its own curve from its
+    own controls and could disagree with the one the producer is looking at — and the whole
+    value of the divergence warning is that both numbers describe ONE policy.
+    """
+    import inspect
+
+    from src import lgmpage
+
+    ladder = inspect.getsource(lgmpage._render_ladder)
+    assert 'def _render_ladder(st, lens: str = "buy")' in ladder
+    assert 'if lens == "sell":' in ladder and "_agency_table(st, curve, unit)" in ladder
+    # the branch must come AFTER the curve exists, or it prices nothing
+    assert ladder.index("curve = lgm.deductible_curve") < ladder.index('if lens == "sell"')
+
+
+def test_the_agency_view_warns_when_the_two_lenses_disagree():
+    """Total premium RISES as the deductible falls, so agency revenue peaks at the LOWEST
+    rung while the producer's net expected gain peaks mid-ladder. Those are different rungs
+    on most selections, and saying so is the point of the lens."""
+    import inspect
+
+    from src import lgmpage
+
+    src = inspect.getsource(lgmpage._agency_table)
+    assert 'max(rows, key=lambda r: r["Agency commission"])' in src
+    assert 'max(rows, key=lambda r: r["Producer net expected gain"])' in src
+    assert "point at different rungs" in src
+
+
+def test_lgm_reads_its_own_commission_card_and_says_so_when_empty():
+    """LGM is LPRA-reinsured (A&O 22.2%, no compensation cap). It must not read PRF's card,
+    and with no rate on file it must say which product is missing rather than render zero."""
+    import inspect
+
+    from src import lgmpage
+
+    src = inspect.getsource(lgmpage._agency_table)
+    assert 'load_aip_commission(product="LGM")' in src
+    assert "No LGM commission rate on file" in src
+    assert "LPRA" in src
+
+
+def test_the_lens_leaves_the_producer_sections_producer_only():
+    """Head-to-heads and the ration section describe the producer's outcome and stay under
+    Buy; only the ladder serves both, because only it carries premium."""
+    import inspect
+
+    from src import lgmpage
+
+    src = inspect.getsource(lgmpage.render)
+    assert '"Buy — producer", "Sell — agency"' in src
+    assert "_render_head_to_head" in src and "_render_ration" in src
+    buy_block = src[src.index("buy = lens.startswith"):]
+    assert 'lens="sell"' in buy_block

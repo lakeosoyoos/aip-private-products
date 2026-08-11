@@ -1031,3 +1031,54 @@ def test_switching_lens_cannot_strand_the_map_on_a_hidden_metric(merged):
                                 d3_js="", topojson_js="", atlas={})
     assert "if (keys.indexOf(metric) < 0) {" in html
     assert "metric = keys[0];" in html
+
+
+def test_a_commission_rate_is_never_borrowed_from_another_product(tmp_path):
+    """Commission is negotiated PER PRODUCT LINE. Livestock (LRP/LGM/DRP) routinely sits on a
+    different schedule from MPCI-family business (PRF/ROWCROP), so a rate entered against one
+    product must never be returned for another. The failure this prevents is quiet and
+    expensive: a map reporting commission the agency does not earn, on a screen someone plans
+    a week around.
+    """
+    from src.prfpage import load_aip_commission
+
+    csv = tmp_path / "rates.csv"
+    csv.write_text(
+        "aip_code,aip_name,product,Pacific,Mountain,Central,Eastern,notes\n"
+        "X1,Test AIP,PRF,20,18,16,14,\n"
+        "X1,Test AIP,LRP,9,8,7,6,\n")
+
+    prf = load_aip_commission(str(csv), product="PRF")
+    lrp = load_aip_commission(str(csv), product="LRP")
+    drp = load_aip_commission(str(csv), product="DRP")   # no rows at all
+
+    assert prf["aips"][0]["by_region"]["Pacific"] == 20
+    assert lrp["aips"][0]["by_region"]["Pacific"] == 9
+    assert drp["aips"] == [] and drp["with_rate"] == 0, (
+        "a product with no rows must come back EMPTY, so the page says 'no rates set' "
+        "instead of borrowing another product's card")
+
+
+def test_the_shipped_card_carries_no_livestock_rate_yet(tmp_path):
+    """The shipped seed has sample MPCI rates and deliberately BLANK livestock ones. Blank is
+    unknown, not zero — the two are different claims and must render differently."""
+    from src.prfpage import load_aip_commission
+
+    for prod in ("PRF", "ROWCROP"):
+        assert load_aip_commission(product=prod)["with_rate"] > 0
+    for prod in ("LRP", "DRP", "LGM"):
+        r = load_aip_commission(product=prod)
+        assert r["with_rate"] == 0, f"{prod} should have no rate on file until entered"
+        assert r["aips"], f"{prod} should still list the AIPs, just without rates"
+
+
+def test_a_card_with_no_product_column_serves_whoever_asked(tmp_path):
+    """A file with no product column makes no claim about products, so an explicit override
+    (build_*_page_payload(commission_csv=...)) is honoured for the product that asked. The
+    leak the column prevents is in the SHARED default card, which always has one."""
+    from src.prfpage import load_aip_commission
+
+    csv = tmp_path / "legacy.csv"
+    csv.write_text("aip_code,aip_name,commission_pct\nX1,Test,11.5\n")
+    for prod in ("PRF", "LRP"):
+        assert load_aip_commission(str(csv), product=prod)["aips"][0]["pct"] == 11.5

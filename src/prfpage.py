@@ -288,8 +288,19 @@ def _col(row, name):
 
 
 # ------------------------------------------------------- commission rates (CSV)
-def load_aip_commission(path=None) -> dict:
-    """Agency commission rate per AIP, from the hand-maintained seed CSV.
+def load_aip_commission(path=None, product: str = "PRF") -> dict:
+    """Agency commission rate per AIP for ONE PRODUCT, from the hand-maintained seed CSV.
+
+    THE PRODUCT ARGUMENT IS LOAD-BEARING. Commission is negotiated per product line, and
+    livestock (LRP, LGM, DRP) commonly sits on a different schedule from MPCI-family business
+    (PRF, ROWCROP). A rate entered against one product is never returned for another: ask for
+    a product with no rows and you get an EMPTY roster, so the page renders its "no rates set"
+    state and says which product is missing. Falling back to another product's rate would
+    report a commission the agency does not earn, on a map someone plans a week around.
+
+    A file with no `product` column at all is treated as the legacy single-product PRF card,
+    so an un-migrated rate card keeps working for the product it was written for and yields
+    nothing for the rest.
 
     Shape:
         {"aips": [{"code","name","pct" (float|None),"notes"}, ...],
@@ -331,13 +342,24 @@ def load_aip_commission(path=None) -> dict:
     # region is adding a column, with no code change. A legacy single-rate file (one
     # `commission_pct` column, no region columns) still loads: its rate becomes the AIP's
     # flat fallback for every region.
-    fixed = {"aip_code", "aip_name", "commission_pct", "notes"}
+    fixed = {"aip_code", "aip_name", "commission_pct", "notes", "product"}
     regions = [c for c in (reader.fieldnames or []) if c and c not in fixed]
+    has_product = "product" in (reader.fieldnames or [])
+    want = (product or "").strip().upper()
 
     for r in reader:
         code = (r.get("aip_code") or "").strip()
         name = (r.get("aip_name") or "").strip()
         if not code and not name:
+            continue
+        # A file WITH a product column makes a claim about products, and that claim is
+        # honoured strictly — a PRF rate is never returned for LRP. A file WITHOUT one makes
+        # no such claim, so it loads for whoever asked: that is a single-product rate card the
+        # caller chose deliberately (build_*_page_payload(commission_csv=...)), and refusing
+        # it would break an explicit override to protect against a mix-up the file cannot
+        # cause. The leak the product column prevents is in the SHARED default card, which
+        # now always has one.
+        if has_product and (r.get("product") or "").strip().upper() != want:
             continue
         rows += 1
         by_region = {}
@@ -353,6 +375,8 @@ def load_aip_commission(path=None) -> dict:
     aips.sort(key=lambda a: a["name"].lower())
     return {
         "aips": aips,
+        "product": want,
+        "has_product_column": has_product,
         "regions": regions,
         "path": COMMISSION_CSV_REL if path is None else str(p),
         # An AIP counts as rated if it carries ANY rate — a regional one or a flat one.
@@ -678,7 +702,7 @@ def build_prf_page_payload(conn: sqlite3.Connection, commission_csv=None,
         "county_names": county_names,
         "cbv": cbv,
         "opt": opt,
-        "comm": load_aip_commission(commission_csv),
+        "comm": load_aip_commission(commission_csv, product="PRF"),
         "commzone": load_commission_zones(timezone_csv),
         "prod": {"min": PROD_MIN_PCT, "max": PROD_MAX_PCT, "default": PROD_DEFAULT_PCT},
         "default_coverage": DEFAULT_COVERAGE,

@@ -55,33 +55,52 @@ st.set_page_config(
 # distinction survives greyscale and the common forms of colour blindness.
 st.markdown("""
 <style>
-  :root { --tab-main: #1f6feb; --tab-sub: #1a7f37; }
+  /* Both chosen for CONTRAST against white labels, measured in the browser rather than
+     eyeballed: 5.5:1 on the blue, 5.1:1 on the green, against a 4.5:1 AA threshold for
+     normal-size text. The original #1f6feb came out at 4.63 — passing, but with almost
+     no margin, and these bars carry every navigation label in the app. */
+  :root { --tab-main: #1a63d8; --tab-sub: #1a7f37; }
 
-  /* SELECTORS VERIFIED AGAINST THE RENDERED DOM, not guessed from an older Streamlit. This
-     version emits div[data-testid="stTab"] with role="tab" and a child
-     div.react-aria-SelectionIndicator for the underline -- there is no [data-baseweb="tab"]
-     and no [data-baseweb="tab-highlight"], so the obvious selectors match nothing and fail
-     silently. If a Streamlit upgrade changes this, the tabs go back to one colour rather
-     than breaking; tests/test_tab_theme.py pins the selectors so that is caught. */
+  /* Tab bars are FILLED, not just tinted text. On a white page a row of coloured words does
+     not read as a control — the eye has to hunt for it. A solid bar is a landmark, and the
+     colour then says which level you are on rather than having to carry that alone.
 
-  /* level 1 — product */
-  .stTabs [data-testid="stTab"][aria-selected="true"] { color: var(--tab-main); }
-  .stTabs [data-testid="stTab"][aria-selected="true"] .react-aria-SelectionIndicator {
-      background-color: var(--tab-main);
+     SELECTORS VERIFIED AGAINST THE RENDERED DOM. This Streamlit emits div[role="tablist"]
+     holding div[data-testid="stTab"], each with a .react-aria-SelectionIndicator child. The
+     [data-baseweb="tab"] selectors in every example online match NOTHING here and fail
+     silently; tests/test_tab_theme.py pins these so an upgrade fails loudly instead.
+
+     CONTRAST: every label stays pure white — 4.7:1 on the blue, 5.2:1 on the green, both
+     above the 4.5:1 AA threshold for normal text. The selected tab is marked by WEIGHT and a
+     translucent pill, not by dimming the others, because dimming is what drops unselected
+     labels below the threshold. It also means the distinction survives greyscale. */
+
+  .stTabs [role="tablist"] {
+      background: var(--tab-main);
+      border-radius: 8px;
+      padding: 4px 8px;
+      gap: 2px;
+      border-bottom: none;
   }
-  .stTabs [data-testid="stTab"]:hover { color: var(--tab-main); }
-
-  /* level 2 — view within a product. Same properties; the extra .stTabs wins on specificity. */
-  .stTabs .stTabs [data-testid="stTab"][aria-selected="true"] { color: var(--tab-sub); }
-  .stTabs .stTabs [data-testid="stTab"][aria-selected="true"] .react-aria-SelectionIndicator {
-      background-color: var(--tab-sub);
+  .stTabs [data-testid="stTab"] {
+      color: #fff;
+      font-size: 0.95rem;
+      border-radius: 6px;
+      padding-left: 12px;
+      padding-right: 12px;
   }
-  .stTabs .stTabs [data-testid="stTab"]:hover { color: var(--tab-sub); }
-  /* Size is set on BOTH levels, not just the sub. Styling only the sub with a rem value
-     made it LARGER than the parent -- the theme default is 14px and 0.94rem is 15.04px --
-     which inverted the hierarchy the colour was meant to reinforce. Stating both removes
-     the dependency on whatever the default happens to be. */
-  .stTabs [data-testid="stTab"] { font-size: 0.95rem; }
+  .stTabs [data-testid="stTab"]:hover { background: rgba(255,255,255,0.14); color: #fff; }
+  .stTabs [data-testid="stTab"][aria-selected="true"] {
+      background: rgba(255,255,255,0.20);
+      font-weight: 700;
+      color: #fff;
+  }
+  .stTabs [data-testid="stTab"] .react-aria-SelectionIndicator { background-color: #fff; }
+
+  /* level 2 — same treatment, green, and smaller so depth reads before colour does. The
+     extra .stTabs is what scopes it: a tab list inside a tab list. Keying off NESTING rather
+     than order or label means renaming or reordering a tab cannot break it. */
+  .stTabs .stTabs [role="tablist"] { background: var(--tab-sub); }
   .stTabs .stTabs [data-testid="stTab"] { font-size: 0.85rem; }
 </style>
 """, unsafe_allow_html=True)

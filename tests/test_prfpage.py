@@ -1067,31 +1067,39 @@ def test_a_commission_rate_is_never_borrowed_from_another_product(tmp_path):
         "instead of borrowing another product's card")
 
 
-def test_every_product_carries_the_same_uniform_ceiling():
-    """One rate, every product: 17.52% = 80% x 21.9%, the top of the documented A&O range.
+def test_each_product_uses_ITS_OWN_A_and_O_category():
+    """One methodology, applied per product: find the product's own A&O row in the published
+    table, multiply by the SRA's 80% compensation cap, and leave it BLANK if it has no row.
 
-    This is a deliberate simplification over per-plan A&O rates, and it is NOT the same as
-    each plan's own ceiling — PRF's own A&O row (area plans not widely available in 2008,
-    20.1%) implies 16.08%, and 16% is what an operating agency reports being paid. The uniform
-    figure therefore sits ABOVE the real PRF rate. That is the intended direction for a
-    ceiling, but the file has to say so rather than let a reader assume 17.52% is earned.
+    The two things this pins are the two ways it has already gone wrong.
+
+    ROW CROP IS AN AREA PLAN, NOT A REVENUE PLAN. It briefly carried the 18.5% revenue rate,
+    which is the rate for the underlying RP/YP policy — not for SCO/ECO/STAX/MCO, which are
+    county-index endorsements first sold between 2015 and 2024. They take the same 20.1% row
+    PRF does: area plans not widely available in 2008.
+
+    LIVESTOCK GETS NOTHING. LRP/LGM/DRP are reinsured under the LPRA, which that table does
+    not cover. A blank is the honest output; substituting the top of the SRA range would be
+    inventing a rate and calling it published.
     """
-    for prod in ("PRF", "ROWCROP", "LRP", "DRP", "LGM"):
+    for prod in ("PRF", "ROWCROP"):
         c = load_aip_commission(product=prod)
-        assert c["with_rate"] == len(c["aips"]) > 0, f"{prod} should carry a ceiling"
+        assert c["with_rate"] == len(c["aips"]) > 0
         for a in c["aips"]:
-            assert set(a["by_region"].values()) == {17.52}, (
-                f"{prod}/{a['code']} should carry the uniform 17.52% ceiling")
-            assert "80%" in a["notes"] and "21.9%" in a["notes"]
+            assert set(a["by_region"].values()) == {16.08}, f"{prod} should be 80% x 20.1%"
+            assert "20.1%" in a["notes"] and "CITED" in a["notes"]
+
+    for prod in ("LRP", "DRP", "LGM"):
+        c = load_aip_commission(product=prod)
+        assert c["with_rate"] == 0, f"{prod} has no published A&O row and must stay blank"
+        assert c["aips"], f"{prod} should still list the AIPs"
+        assert "LPRA" in c["aips"][0]["notes"], "say WHY it is blank"
 
     raw = (Path(__file__).resolve().parents[1] / "data/seed/aip_commission.csv").read_text()
     up = raw.upper()
     assert "III(A)(4)(B)" in up, "cite the SRA provision the 80% comes from"
-    assert "MAXIMUM" in up or "CEILING" in up
-    # the override must be stated, not silent: a reader has to be able to find out that the
-    # per-plan rates differ and that PRF's own row is lower
-    assert "16.08" in raw, "the PRF-specific rate this overrides must be recorded"
-    assert "LPRA" in up, "livestock being unverified must stay on the record"
+    assert "R45291" in up, "cite the table the A&O rates come from"
+    assert "METHODOLOGY" in up, "the rule must be written down, not just its outputs"
 
 
 def test_a_card_with_no_product_column_serves_whoever_asked(tmp_path):

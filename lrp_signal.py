@@ -1169,13 +1169,23 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
     # (10pt ticks) arrive as ~5pt and the axis becomes unreadable. Raising dpi does NOT help:
     # it scales the whole image equally and the browser scales it right back down. The only
     # lever is point size relative to figure size.
-    TICK_FS, LABEL_FS, TITLE_FS, ANNOT_FS = 15, 15, 14, 9
+    TICK_FS, LABEL_FS, TITLE_FS, ANNOT_FS = 15, 15, 15, 11
     hm_kw = dict(linewidths=0.8, linecolor="white",
                  annot_kws={"size": ANNOT_FS, "fontweight": "bold"})
     cbar_kw = dict(shrink=0.6, aspect=15)
 
-    # 2×2 layout
-    fig, axes = plt.subplots(2, 2, figsize=(18, 13))
+    # STACKED FULL WIDTH, not 2x2 — and NARROWER than the old grid, which is the part that
+    # actually matters. Streamlit fits the image to the container, so the on-screen scale is
+    # (container px) / (figure inches): 809/18 = 45 px per inch before, 809/13 = 62 now. Two
+    # gains compound. Each panel gets the whole width instead of half, so a cell goes from
+    # ~0.8in to ~1.7in; and every point of type renders 1.4x larger because the figure is
+    # narrower. Together a cell's on-screen width roughly doubles, which is the room the
+    # two-line annotations ("$23.74 / $308,656") needed and never had.
+    #
+    # The cost is a tall image. That is the right trade for a reference table someone reads
+    # a row at a time: scrolling is cheap, squinting is not.
+    n_panels = 4 if has_history else 2
+    fig, axes = plt.subplots(n_panels, 1, figsize=(13, 5.6 * n_panels))
 
     # ── Panel 1 (top-left): Total gap $/cwt ──
     p_gap = pivot("gap")
@@ -1187,14 +1197,14 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
                 annot_gap.loc[ri, ci] = f"${v:.2f}\n${v * cwt:,.0f}"
             else:
                 annot_gap.loc[ri, ci] = ""
-    sns.heatmap(p_gap, ax=axes[0, 0], cmap="RdYlGn", center=0,
+    sns.heatmap(p_gap, ax=axes[0], cmap="RdYlGn", center=0,
                 annot=annot_gap, fmt="",
                 cbar_kws={**cbar_kw, "label": "$/cwt"}, **hm_kw)
-    axes[0, 0].set_title(f"Total Savings (CME Put − LRP Premium)\n"
+    axes[0].set_title(f"Total Savings (CME Put − LRP Premium)\n"
                          f"$/cwt + total on {head:,} head", fontsize=TITLE_FS)
-    axes[0, 0].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
-    axes[0, 0].set_ylabel("Coverage Level", fontsize=LABEL_FS)
-    axes[0, 0].set_xticklabels(tick_labels, fontsize=TICK_FS)
+    axes[0].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
+    axes[0].set_ylabel("Coverage Level", fontsize=LABEL_FS)
+    axes[0].set_xticklabels(tick_labels, fontsize=TICK_FS)
 
     # ── Panel 2 (top-right): Subsidy vs Vol decomposition ──
     p_sub = pivot("subsidy_gap")
@@ -1209,15 +1219,15 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
                 annot_decomp.loc[ri, ci] = (f"sub ${s:.2f}\nvol ${v:.2f}")
             else:
                 annot_decomp.loc[ri, ci] = ""
-    sns.heatmap(p_vol, ax=axes[0, 1], cmap="RdYlGn", center=0,
+    sns.heatmap(p_vol, ax=axes[1], cmap="RdYlGn", center=0,
                 annot=annot_decomp, fmt="",
                 cbar_kws={**cbar_kw, "label": "vol gap $/cwt"}, **hm_kw)
-    axes[0, 1].set_title("Gap Decomposition: Subsidy vs Vol Discount\n"
+    axes[1].set_title("Gap Decomposition: Subsidy vs Vol Discount\n"
                          "sub = federal subsidy | vol = RMA cheaper than CME",
                          fontsize=TITLE_FS)
-    axes[0, 1].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
-    axes[0, 1].set_ylabel("")
-    axes[0, 1].set_xticklabels(tick_labels, fontsize=TICK_FS)
+    axes[1].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
+    axes[1].set_ylabel("Coverage Level", fontsize=LABEL_FS)
+    axes[1].set_xticklabels(tick_labels, fontsize=TICK_FS)
 
     if has_history:
         # ── Panel 3 (bottom-left): 30-day average gap ──
@@ -1230,16 +1240,16 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
                     annot_avg.loc[ri, ci] = f"${v:.2f}"
                 else:
                     annot_avg.loc[ri, ci] = ""
-        sns.heatmap(p_avg, ax=axes[1, 0], cmap="RdYlGn", center=0,
+        sns.heatmap(p_avg, ax=axes[2], cmap="RdYlGn", center=0,
                     annot=annot_avg, fmt="",
                     cbar_kws={**cbar_kw, "label": "$/cwt"}, **hm_kw)
         n_days = int(grid["n_hist"].max()) if "n_hist" in grid.columns else 0
-        axes[1, 0].set_title(f"Average Savings — {n_days} recorded day(s)\n"
+        axes[2].set_title(f"Average Savings — {n_days} recorded day(s)\n"
                              "each day priced with its own curve (never "
                              "re-priced)", fontsize=TITLE_FS)
-        axes[1, 0].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
-        axes[1, 0].set_ylabel("Coverage Level", fontsize=LABEL_FS)
-        axes[1, 0].set_xticklabels(tick_labels, fontsize=TICK_FS)
+        axes[2].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
+        axes[2].set_ylabel("Coverage Level", fontsize=LABEL_FS)
+        axes[2].set_xticklabels(tick_labels, fontsize=TICK_FS)
 
         # ── Panel 4 (bottom-right): Richness ──
         p_rich = pivot("richness")
@@ -1263,18 +1273,19 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
                     annot_rich.loc[ri, ci] = ""
         # vmax was 5, but observed richness tops out near 2.1 once producer premium is
         # correct — a 0..5 scale pinned every real cell into the same washed-out band.
-        sns.heatmap(p_rich, ax=axes[1, 1], cmap="RdYlGn", center=1.0,
+        sns.heatmap(p_rich, ax=axes[3], cmap="RdYlGn", center=1.0,
                     vmin=0, vmax=2.5, annot=annot_rich, fmt="",
                     cbar_kws={**cbar_kw, "label": "x normal"}, **hm_kw)
-        axes[1, 1].set_title("Today vs Recorded Avg (x multiple)\n"
+        axes[3].set_title("Today vs Recorded Avg (x multiple)\n"
                              f"BUY needs ≥{MIN_RICHNESS_BUY:g}x AND +$0.25/cwt vs normal; "
                              "blank = baseline too small to trust", fontsize=TITLE_FS)
-        axes[1, 1].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
-        axes[1, 1].set_ylabel("")
-        axes[1, 1].set_xticklabels(tick_labels, fontsize=TICK_FS)
-    else:
-        axes[1, 0].set_visible(False)
-        axes[1, 1].set_visible(False)
+        axes[3].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
+        axes[3].set_ylabel("Coverage Level", fontsize=LABEL_FS)
+        axes[3].set_xticklabels(tick_labels, fontsize=TICK_FS)
+    # No else-branch hiding empty panels any more: the 2x2 grid always created four axes and
+    # had to blank two of them, leaving a large hole in the figure. Stacked, n_panels is 2 or
+    # 4 up front, so the history panels are simply never created and the image is shorter
+    # instead of half empty.
 
     # Sweep every axis rather than styling each panel: the Y tick labels (coverage levels)
     # and the colour bars are created by seaborn and never touched above, so setting sizes

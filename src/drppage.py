@@ -82,6 +82,8 @@ import datetime as _dt
 import json
 import sqlite3
 
+from .prfpage import STATE_TIMEZONE, load_aip_commission
+
 # Coverage level the page opens on, when the sweep stored it.
 DEFAULT_COVERAGE = "0.9"
 DEFAULT_OPTION = "Class"
@@ -269,8 +271,31 @@ def build_drp_page_payload(conn: sqlite3.Connection) -> dict:
         except ValueError:
             return float("inf")
 
+    # AGENCY SIDE. Commission is a percent of TOTAL premium, but every stored DRP metric is
+    # normalised on the PRODUCER's premium, so the subsidy schedule is what converts one into
+    # the other: total = producer / (1 - subsidy). Carried per coverage level because DRP's
+    # subsidy varies with it (0.59 at 0.70 down to 0.44 at 0.95).
+    #
+    # The roster is loaded with product="DRP" and NOT PRF's. Commission is negotiated per
+    # product line and DRP is reinsured under the LPRA, whose A&O is 22.2% against the SRA's
+    # 20.1% for area plans — borrowing PRF's card would understate DRP by a third.
+    subsidy = {}
+    try:
+        ry = conn.execute("SELECT MAX(reinsurance_year) FROM drp_subsidy").fetchone()[0]
+        for cl, sub in conn.execute(
+                "SELECT coverage_level, MAX(subsidy_pct) FROM drp_subsidy "
+                "WHERE reinsurance_year = ? GROUP BY coverage_level", (ry,)):
+            subsidy[_cov_key(cl)] = float(sub)
+    except (sqlite3.OperationalError, TypeError):
+        pass                      # no schedule: the commission metric renders as unavailable
+
     return {
         "generated": _dt.date.today().isoformat(),
+        "subsidy": subsidy,
+        "comm": load_aip_commission(product="DRP"),
+        # state -> commission region, the same axis PRF and row crop use, so one rate card
+        # serves every product rather than each inventing its own geography.
+        "state_zone": dict(STATE_TIMEZONE),
         "states": states,
         "state_names": state_names,
         "avail": avail,
@@ -602,13 +627,15 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div class="sub" id="pageSub">Generated __GENERATED__.</div>
 </header>
 <div class="filters">
-  <label>Show <select id="mSel">
-    <option value="win">Best win rate (%)</option>
-    <option value="net">Best return per $1 of liability</option>
-    <option value="cwt">Best return per hundredweight ($)</option>
-    <option value="prem">Producer premium per hundredweight ($)</option>
-    <option value="policy">Net return on the whole declaration ($)</option>
-  </select></label>
+  <!-- WHOSE MONEY. Five producer metrics and one agency metric; the lens picks the question
+       and Show then offers only what answers it. -->
+  <label>Lens
+    <span class="seg" id="lensSeg">
+      <button data-lens="buy" class="on">Buy — producer</button>
+      <button data-lens="sell">Sell — agency</button>
+    </span>
+  </label>
+  <label>Show <select id="mSel"></select></label>
   <label>Pricing option <span class="seg" id="optSeg"></span></label>
   <label>Quarter <span class="seg" id="qSeg"></span></label>
   <label>Coverage <span class="seg" id="covSeg"></span></label>
@@ -736,6 +763,13 @@ var DATA = __PAYLOAD__;
             sub: "What the producer pays after subsidy, on the same best-net declaration the " +
                  "other metrics rank. Simulated per P18-1; DRP publishes no rate table.",
             none: "not scored for this selection" },
+    comm: { label: "Commission per cwt", legend: "Agency commission per cwt ($)",
+            ramp: RAMP, sized: true, needsComm: true,
+            title: "DRP agency commission — $ per HUNDREDWEIGHT on the recommended declaration",
+            sub: "Your commission on the SAME best-net declaration the producer metrics rank. " +
+                 "Commission is a percent of TOTAL premium, so the producer premium is grossed " +
+                 "back up by the subsidy before the rate is applied.",
+            none: "no commission rate on file, or no subsidy for this coverage level" },
     policy: { label: "Net on the declaration", legend: "Net return on the declaration ($)",
             ramp: RAMP, sized: true, needsProd: true,
             title: "DRP optimizer — net return on the whole declaration ($)",
@@ -847,9 +881,41 @@ var DATA = __PAYLOAD__;
       return null;
     return perDollar * liab * sizing();
   }
+  // ---------------- agency side
+  // Commission is a percent of TOTAL premium; every stored DRP metric is normalised on the
+  // PRODUCER's premium. The subsidy converts one to the other:
+  //     total = producer / (1 - subsidy)      commission = total x rate
+  // Neither input is guessed. No subsidy for the coverage level, or no rate on file for DRP,
+  // returns null and the county renders "no value" — never zero, which is a different claim.
+  var SUBSIDY = DATA.subsidy || {};
+  var STATE_ZONE = DATA.state_zone || {};
+  function commPct(fips) {
+    // Averaged across the AIPs that carry a rate, in this state's commission region. The
+    // shipped card is uniform so the average is that number; it stops being uniform the
+    // moment an agency enters its real per-AIP schedule, and this keeps working.
+    var aips = (DATA.comm && DATA.comm.aips) || [];
+    var zone = STATE_ZONE[String(fips)];
+    var vals = [];
+    aips.forEach(function (a) {
+      var r = (zone && a.by_region && a.by_region[zone] !== undefined)
+              ? a.by_region[zone] : a.pct;
+      if (r !== null && r !== undefined) vals.push(r);
+    });
+    if (!vals.length) return null;
+    return vals.reduce(function (x, y) { return x + y; }, 0) / vals.length;
+  }
+  function commFrom(c, fips) {
+    var producerPerCwt = cwtFrom(c.prem, c.liab);
+    var sub = SUBSIDY[coverage];
+    var pct = commPct(fips);
+    if (producerPerCwt === null || sub === undefined || pct === null || sub >= 1) return null;
+    return (producerPerCwt / (1 - sub)) * (pct / 100);
+  }
+
   function valFor(fips) {
     var c = cellFor(fips);
     if (!c) return null;
+    if (metric === "comm") return commFrom(c, fips);
     if (metric === "win") return c.win === undefined ? null : c.win;
     if (metric === "net") return c.net === undefined ? null : c.net;
     if (metric === "prem") return cwtFrom(c.prem, c.liab);
@@ -1239,6 +1305,41 @@ var DATA = __PAYLOAD__;
   function onSizingChange() {
     if (isDerived()) applyMetric();
   }
+
+  // ---------------- lens
+  // Producer premium per cwt sits under BUY: it is what the producer pays, and it is the
+  // cost side of their own return. Commission is the only agency metric DRP has.
+  var LENS = { buy: ["win", "net", "cwt", "prem", "policy"], sell: ["comm"] };
+  var lens = "buy";
+
+  function fillMetricSelect() {
+    var keys = LENS[lens];
+    mSel.innerHTML = "";
+    keys.forEach(function (k) {
+      if (!METRICS[k]) return;
+      var o = document.createElement("option");
+      o.value = k; o.textContent = METRICS[k].legend;
+      mSel.appendChild(o);
+    });
+    if (keys.indexOf(metric) < 0) {
+      metric = keys[0];
+      mSel.value = metric;
+      onControlChange();
+    } else {
+      mSel.value = metric;
+    }
+  }
+
+  document.getElementById("lensSeg").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-lens]");
+    if (!b || b.dataset.lens === lens) return;
+    lens = b.dataset.lens;
+    this.querySelectorAll("button").forEach(function (x) {
+      x.classList.toggle("on", x.dataset.lens === lens);
+    });
+    fillMetricSelect();
+  });
+  fillMetricSelect();
 
   mSel.addEventListener("change", function () {
     if (metric === mSel.value) return;

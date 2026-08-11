@@ -236,10 +236,11 @@ def test_render_embeds_payload_and_assets(populated):
 def test_render_offers_all_five_metrics_and_the_controls(populated):
     html = render_drp_page_html(build_drp_page_payload(populated),
                                 d3_js="", topojson_js="", atlas={})
-    for value in ('value="win"', 'value="net"', 'value="cwt"', 'value="prem"',
-                  'value="policy"'):
-        assert value in html
+    # The Show list is built from the LENS map now rather than static <option> markup, so
+    # assert the metrics are OFFERED rather than hardcoded.
+    assert 'var LENS = { buy: ["win", "net", "cwt", "prem", "policy"], sell: ["comm"] }' in html
     assert 'id="mSel"' in html
+    assert 'id="lensSeg"' in html
     for el in ('id="optSeg"', 'id="qSeg"', 'id="covSeg"',
                'id="fShare"', 'id="fPf"', 'id="fProd"'):
         assert el in html
@@ -338,3 +339,59 @@ def test_module_exposes_the_streamlit_entry_point():
     assert callable(drppage.render)
     assert callable(drppage.build_drp_page_payload)
     assert callable(drppage.render_drp_page_html)
+
+
+def test_the_agency_metric_grosses_the_premium_back_up_by_the_subsidy(populated):
+    """DRP had no agency metric at all — all five described the producer.
+
+    Commission is a percent of TOTAL premium, but every stored DRP figure is normalised on
+    the PRODUCER's premium, so the subsidy is what connects them:
+
+        total = producer / (1 - subsidy)        commission = total x rate
+
+    Verified against the rendered page: Iowa at $0.0344/cwt producer premium, 44% subsidy and
+    a 22.2% rate gives 0.0344 / 0.56 x 0.222 = $0.0136/cwt, which is what the map shows.
+
+    Applying the rate to the producer premium directly would understate commission by the
+    whole subsidy — 44% low at the top coverage levels.
+    """
+    html = render_drp_page_html(build_drp_page_payload(populated),
+                                d3_js="", topojson_js="", atlas={})
+    assert "(producerPerCwt / (1 - sub)) * (pct / 100)" in html
+    assert "sell: [\"comm\"]" in html
+    # neither input may be guessed
+    assert "sub === undefined || pct === null" in html
+
+
+def test_drp_reads_its_OWN_commission_card(populated):
+    """DRP is reinsured under the LPRA (A&O 22.2%, no compensation cap), PRF under the SRA
+    (area A&O 20.1% x 80% cap). Borrowing PRF's card would understate DRP by a third."""
+    assert build_drp_page_payload(populated)["comm"]["product"] == "DRP"
+
+
+def test_the_subsidy_schedule_loads_from_the_shipped_database():
+    """Separate from the card, and separately required: without it the commission metric
+    cannot gross the producer premium up and renders as absent everywhere. The synthetic
+    fixture has no drp_subsidy table, so this is checked against the real artifact."""
+    import pathlib
+    import sqlite3
+
+    import pytest
+
+    db = pathlib.Path(__file__).resolve().parents[1] / "data" / "catalog_app.db"
+    if not db.exists():
+        pytest.skip("catalog_app.db not built")
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    sub = build_drp_page_payload(conn)["subsidy"]
+    assert sub, "no DRP subsidy schedule — the commission metric will be blank everywhere"
+    assert all(0.0 < v < 1.0 for v in sub.values()), sub
+
+
+def test_the_commission_metric_says_no_value_rather_than_zero(populated):
+    """No rate on file, or no subsidy for the coverage level, must render as absent. Zero
+    commission is a different claim from unknown commission."""
+    html = render_drp_page_html(build_drp_page_payload(populated),
+                                d3_js="", topojson_js="", atlas={})
+    assert "no commission rate on file" in html
+    assert "return null;" in html.split("function commFrom")[1][:400]

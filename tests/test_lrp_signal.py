@@ -63,3 +63,58 @@ def test_the_history_panels_are_not_created_when_there_is_no_history():
     src = inspect.getsource(lrp_signal.build_chart_figure)
     assert "n_panels = 4 if has_history else 2" in src
     assert "set_visible(False)" not in src, "empty panels should not exist to be hidden"
+
+
+def test_the_grid_carries_return_per_producer_dollar_both_ways():
+    """LRP was presented ONLY as a cost comparison — "cheaper than the CME put by $X/cwt" —
+    which speaks only to someone who already wanted the hedge. These two columns answer the
+    question every other product in this app is ranked by: what does a dollar of the
+    producer's own money buy?
+
+        ret_sub = actuarial / producer = 1/(1-subsidy)   RMA's own valuation, always > 1
+        ret_mkt = cme_put  / producer                    the market's, and it CAN be < 1
+
+    ret_mkt being able to fall below 1.00 is the point. RMA's rate can exceed the market's by
+    more than the subsidy covers, and a metric that cannot express that would only ever
+    recommend buying.
+    """
+    import datetime as dt
+    import glob
+    import pathlib
+
+    import pandas as pd
+    import pytest
+
+    import lrp_signal as L
+
+    files = sorted(glob.glob(str(pathlib.Path(__file__).resolve().parents[1]
+                                 / "lrp_cache" / "lrp_fed_*.csv")))
+    if not files:
+        pytest.skip("no cached RMA rate file")
+    df = pd.read_csv(files[-1])
+    spot = float(df["coverage_price"].max())
+    base = dt.date(2026, 8, 11)
+
+    def add_months(d, k):
+        y, m = divmod(d.month - 1 + k, 12)
+        return dt.date(d.year + y, m + 1, 1)
+
+    curve = {f"{add_months(base, k).strftime('%b')} {add_months(base, k).year}":
+             spot * (1 + 0.002 * k) for k in range(15)}
+    g = L.build_grid(df, curve, r=0.045, base_vol=0.18, asof=base)
+
+    assert {"ret_sub", "ret_mkt"} <= set(g.columns)
+    priced = g[g["producer_prem"] > 0]
+    # The identity holds to within rounding, NOT exactly, and that is the correct behaviour:
+    # the ratio is taken on the full-precision premiums before either is rounded to the 4dp
+    # the columns store. Recomputing it from the rounded columns is what drifts — dividing
+    # 0.103 by 0.0463 gives 2.2246 where the true ratio is 2.2222. Comparing on a relative
+    # tolerance rather than an absolute one keeps this honest at every premium size.
+    for _, r in priced.head(20).iterrows():
+        assert r["ret_sub"] == pytest.approx(r["actuarial_prem"] / r["producer_prem"], rel=0.01)
+        assert r["ret_mkt"] == pytest.approx(r["cme_put"] / r["producer_prem"], rel=0.01)
+    # RMA's own valuation can never say you lose; the market's can, and does
+    assert (priced["ret_sub"] > 1.0).all(), "1/(1-subsidy) must exceed 1 everywhere"
+    assert (priced["ret_mkt"] < 1.0).any(), (
+        "ret_mkt must be able to fall below 1.00 — otherwise it cannot express RMA "
+        "out-pricing the market")

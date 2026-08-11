@@ -81,6 +81,84 @@ def _window_status():
     return False, "closed — opens ~3:30 PM CT"
 
 
+
+LRP_MEASURED_NOTE = (
+    "**Measured LRP experience nationally is 0.66x** — producers have received 66 cents of "
+    "indemnity per dollar of premium they paid, across 2005-2026 (RMA Summary of Business, "
+    "plan 81: loss ratio 0.43, subsidy 34.8%, and 0.43 / (1 - 0.348) = 0.66). It swings hard "
+    "by year, from 0.09x to 4.40x, and the recent heavy-volume years have been the poor ones "
+    "because cattle prices rose and a price floor does not pay when prices rise. Neither "
+    "column below is a forecast; both are what today's rate card implies."
+)
+
+
+def _render_agency(st, grid, commodity, cwt, head):
+    """The Sell lens: agency revenue across the same coverage x tenor grid.
+
+    LRP had no agency figure at all. Commission is a percent of TOTAL premium, and LRP's grid
+    carries that directly as `actuarial_prem` — the unsubsidised premium per cwt — so there is
+    no grossing-up step. What matters is that it is NOT the producer premium: applying the
+    rate to what the producer pays would understate commission by the whole subsidy, about
+    35% at every coverage level LRP sells.
+    """
+    import pandas as pd
+
+    from src.prfpage import load_aip_commission
+
+    st.subheader("Sell — agency commission across the grid")
+    comm = load_aip_commission(product="LRP")
+    rated = [a for a in comm["aips"] if a["by_region"] or a["pct"] is not None]
+    if not rated:
+        st.warning(
+            "No LRP commission rate on file. LRP is reinsured under the LPRA, whose A&O is "
+            "22.2% of net book premium (LPRA IV(b)(2)(D)) and which contains no agent "
+            "compensation cap. Enter your negotiated schedule in "
+            "`data/seed/aip_commission.csv` under product=LRP.")
+        return
+
+    def _rate(a):
+        vals = [v for v in (a["by_region"] or {}).values() if v is not None]
+        return (sum(vals) / len(vals)) if vals else a["pct"]
+
+    rates = [r for r in (_rate(a) for a in rated) if r is not None]
+    pct = sum(rates) / len(rates)
+    st.caption(
+        f"At **{pct:.2f}%** of total premium — the LPRA ceiling (22.2% A&O, no compensation "
+        f"cap in that agreement). Read it as *at most*. Sized to {head:,} head "
+        f"({cwt:,.0f} cwt).")
+
+    g = grid[grid["actuarial_prem"] > 0].copy()
+    if g.empty:
+        st.info("No priced cells in the current grid.")
+        return
+    g["comm_cwt"] = g["actuarial_prem"] * pct / 100.0
+    g["comm_total"] = g["comm_cwt"] * cwt
+
+    piv = g.pivot(index="coverage_pct", columns="weeks", values="comm_total")
+    order = [c for c in
+             (f"{int(v * 100)}%" for v in sorted(grid["coverage_level"].unique(), reverse=True))
+             if c in piv.index]
+    st.dataframe(piv.reindex(order), width="stretch")
+    st.caption(f"Agency commission in dollars on {head:,} head, by coverage level and tenor.")
+
+    best = g.loc[g["comm_total"].idxmax()]
+    prod = g.loc[g["ret_mkt"].idxmax()] if "ret_mkt" in g.columns else None
+    st.info(
+        f"**Agency revenue peaks at {best['coverage_pct']} / {int(best['weeks'])}w** — "
+        f"${best['comm_total']:,.0f} on {head:,} head. Commission tracks PREMIUM, so it is "
+        f"largest where the producer pays most: the highest coverage and the longest tenor.")
+    if prod is not None and (prod["coverage_pct"], prod["weeks"]) != (best["coverage_pct"],
+                                                                     best["weeks"]):
+        st.warning(
+            f"**The producer's best cell is elsewhere.** Return per producer dollar peaks at "
+            f"{prod['coverage_pct']} / {int(prod['weeks'])}w ({prod['ret_mkt']:.2f}x), where "
+            f"agency commission is ${prod['actuarial_prem'] * pct / 100.0 * cwt:,.0f} — "
+            f"${best['comm_total'] - prod['actuarial_prem'] * pct / 100.0 * cwt:,.0f} less "
+            f"than the agency's best cell. Recommending the first while quoting the second is "
+            f"the conflict this lens exists to make visible.")
+    st.info(LRP_MEASURED_NOTE)
+
+
 def render():
     """Draw the full LRP Savings Signal page."""
 
@@ -169,6 +247,17 @@ def render():
             f"(${r['gap']:.2f}/cwt, {r['richness']:.1f}x)"
             for _, r in buys.iterrows()))
 
+    # ── Lens ─────────────────────────────────────────────────────────────
+    # WHOSE MONEY. The four tabs below are organised by ARTIFACT — a chart, a table, a
+    # history, a hedge calculator — not by question, and every one of them describes the
+    # producer. There was no agency figure anywhere on this tab.
+    lens = st.radio("Lens", ["Buy — producer", "Sell — agency"],
+                    horizontal=True, key="lrp_lens", label_visibility="collapsed")
+
+    if lens.startswith("Sell"):
+        _render_agency(st, grid, commodity, cwt, head)
+        return
+
     # ── Tabs ─────────────────────────────────────────────────────────────
     tab_chart, tab_grid, tab_history, tab_delta = st.tabs(
         ["📊 Dashboard", "🔢 Full grid", "📈 Gap history", "🎯 Delta hedge"])
@@ -186,8 +275,13 @@ def render():
     with tab_grid:
         show = grid.copy()
         show["total_$"] = (show["gap"] * cwt).round(0)
+        # ret_mkt and ret_sub sit next to the gap deliberately. The gap is a COST comparison
+        # — "LRP is $X/cwt cheaper than the put" — which only speaks to someone who already
+        # wanted the hedge. These two say what a dollar of the producer's own money buys,
+        # which is the question every other product in this app is ranked by.
         cols = ["weeks", "coverage_pct", "coverage_price", "F",
-                "producer_prem", "cme_put", "gap", "total_$",
+                "producer_prem", "actuarial_prem", "cme_put", "gap", "total_$",
+                "ret_mkt", "ret_sub",
                 "subsidy_gap", "vol_gap", "hist_avg_gap", "richness",
                 "buy_ok", "live"]
         show = show[[c for c in cols if c in show.columns]]
@@ -196,6 +290,21 @@ def render():
             show, width='stretch', height=560, hide_index=True,
             column_config={
                 "weeks": st.column_config.NumberColumn("Tenor (w)"),
+                "actuarial_prem": st.column_config.NumberColumn(
+                    "Total prem $/cwt", format="%.4f",
+                    help="The UNSUBSIDISED premium — what RMA reckons the protection is "
+                         "worth, and what agency commission is paid on."),
+                "ret_mkt": st.column_config.NumberColumn(
+                    "Return per $1 (market)", format="%.2f",
+                    help="CME put value / producer premium. What a dollar of your own money "
+                         "buys, valued at what the same protection actually costs in the "
+                         "market. BELOW 1.00 means you pay more than the protection is worth "
+                         "even after the subsidy."),
+                "ret_sub": st.column_config.NumberColumn(
+                    "Return per $1 (RMA)", format="%.2f",
+                    help="Unsubsidised premium / producer premium = 1/(1-subsidy). What the "
+                         "subsidy alone hands you IF RMA prices fairly. Always above 1.00, "
+                         "which is why it is not the honest column on its own."),
                 "coverage_pct": "Coverage",
                 "coverage_price": st.column_config.NumberColumn(
                     "Strike $", format="$%.2f"),

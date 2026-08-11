@@ -88,3 +88,46 @@ def test_lrp_only_deps_present(pkg):
     pytest.importorskip(pkg)
     reqs = (ROOT / "requirements.txt").read_text()
     assert pkg in reqs, f"{pkg} missing from runtime requirements.txt"
+
+
+def test_lrp_has_an_agency_lens_and_uses_the_TOTAL_premium():
+    """LRP had no agency figure at all, and its four tabs are organised by artifact — chart,
+    table, history, hedge — rather than by question.
+
+    Commission is a percent of TOTAL premium. LRP's grid carries that directly as
+    actuarial_prem, so there is no grossing-up step, but it is emphatically NOT the producer
+    premium: applying the rate to what the producer pays would understate commission by the
+    whole subsidy, roughly 35% at every coverage level LRP sells.
+    """
+    import inspect
+
+    import lrp_page
+
+    src = inspect.getsource(lrp_page._render_agency)
+    assert 'load_aip_commission(product="LRP")' in src, "must read LRP's own card"
+    assert 'g["actuarial_prem"] * pct / 100.0' in src, "commission is on TOTAL premium"
+    assert "producer_prem" not in src.split("comm_cwt")[0].split("actuarial_prem")[-1]
+    assert "No LRP commission rate on file" in src and "LPRA" in src
+
+
+def test_the_agency_lens_names_the_producers_best_cell_too():
+    """Commission tracks premium, so agency revenue peaks at the highest coverage and longest
+    tenor — which is not where return per producer dollar peaks. The lens says both."""
+    import inspect
+
+    import lrp_page
+
+    src = inspect.getsource(lrp_page._render_agency)
+    assert 'g["ret_mkt"].idxmax()' in src
+    assert "producer's best cell is elsewhere" in src
+
+
+def test_the_measured_return_is_stated_not_just_the_modelled_one():
+    """0.66x is what LRP actually returned nationally, 2005-2026. The modelled columns are
+    what today's rate card implies; a page that showed only those would read as a
+    recommendation."""
+    import lrp_page
+
+    assert "0.66x" in lrp_page.LRP_MEASURED_NOTE
+    assert "Summary of Business" in lrp_page.LRP_MEASURED_NOTE
+    assert "0.09x" in lrp_page.LRP_MEASURED_NOTE      # and the range, not just the average

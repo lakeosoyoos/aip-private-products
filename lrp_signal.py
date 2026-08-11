@@ -661,6 +661,28 @@ def build_grid(lrp_df, futures_curve, r, base_vol, asof=None):
             # Normalize to underlying so 70% and 100% are comparable
             gap_pct = gap / cov_price if cov_price > 0 else 0
 
+            # ── RETURN PER PRODUCER DOLLAR ──
+            #
+            # Everything above is a COST comparison: "LRP is $X/cwt cheaper than the CME put".
+            # That only speaks to someone who already wanted the hedge. These two say what a
+            # dollar of the producer's own money buys, which is the question the rest of this
+            # project asks of every product (PRF per $1 protection, DRP per $1 liability).
+            #
+            #   ret_sub  RMA's own valuation. act_prem is the unsubsidised premium, i.e. what
+            #            RMA reckons the protection is worth, so this is 1/(1-subsidy) and is
+            #            always > 1. It is what the subsidy alone hands you IF RMA prices fair.
+            #
+            #   ret_mkt  the market's valuation. cme_put is what the equivalent protection
+            #            actually costs, so this is the honest one — and it can be BELOW 1,
+            #            because RMA's rate can exceed the market's and the subsidy does not
+            #            always cover the difference.
+            #
+            # The two disagreeing IS the vol_gap above, expressed as a multiple instead of a
+            # difference. Neither is a forecast: measured LRP experience nationally is 0.66x
+            # (Summary of Business, plan 81), which is below both.
+            ret_sub = (act_prem / prod_prem) if prod_prem > 0 else None
+            ret_mkt = (cme_px / prod_prem) if prod_prem > 0 else None
+
             rows.append({
                 "weeks": weeks,
                 "coverage_level": cov,
@@ -674,6 +696,8 @@ def build_grid(lrp_df, futures_curve, r, base_vol, asof=None):
                 "gap_pct": round(gap_pct * 100, 3),  # as percentage
                 "subsidy_gap": round(subsidy_gap, 4),
                 "vol_gap": round(vol_gap, 4),
+                "ret_sub": None if ret_sub is None else round(ret_sub, 4),
+                "ret_mkt": None if ret_mkt is None else round(ret_mkt, 4),
                 "put_delta": round(put_delta, 4),
                 "hedge_cwt_per_delta": hedge_cwt_per_delta,
                 "live": live,

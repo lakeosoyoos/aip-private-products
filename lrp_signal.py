@@ -1163,8 +1163,15 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
     has_history = (not estimated and "richness" in grid.columns
                    and grid["richness"].notna().any())
     tick_labels = [f"{w}w" for w in TENORS_WEEKS]
+    # TYPE SIZES ARE SET FOR THE SIZE THIS IS *VIEWED* AT, not the size it is drawn at.
+    # st.pyplot renders the figure ~1460 px wide and the browser fits it to the container at
+    # ~809 px — every glyph lands on screen at 55% of its drawn size, so matplotlib's defaults
+    # (10pt ticks) arrive as ~5pt and the axis becomes unreadable. Raising dpi does NOT help:
+    # it scales the whole image equally and the browser scales it right back down. The only
+    # lever is point size relative to figure size.
+    TICK_FS, LABEL_FS, TITLE_FS, ANNOT_FS = 15, 15, 14, 9
     hm_kw = dict(linewidths=0.8, linecolor="white",
-                 annot_kws={"size": 7, "fontweight": "bold"})
+                 annot_kws={"size": ANNOT_FS, "fontweight": "bold"})
     cbar_kw = dict(shrink=0.6, aspect=15)
 
     # 2×2 layout
@@ -1184,10 +1191,10 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
                 annot=annot_gap, fmt="",
                 cbar_kws={**cbar_kw, "label": "$/cwt"}, **hm_kw)
     axes[0, 0].set_title(f"Total Savings (CME Put − LRP Premium)\n"
-                         f"$/cwt + total on {head:,} head", fontsize=10)
-    axes[0, 0].set_xlabel("Tenor (weeks)")
-    axes[0, 0].set_ylabel("Coverage Level")
-    axes[0, 0].set_xticklabels(tick_labels, fontsize=9)
+                         f"$/cwt + total on {head:,} head", fontsize=TITLE_FS)
+    axes[0, 0].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
+    axes[0, 0].set_ylabel("Coverage Level", fontsize=LABEL_FS)
+    axes[0, 0].set_xticklabels(tick_labels, fontsize=TICK_FS)
 
     # ── Panel 2 (top-right): Subsidy vs Vol decomposition ──
     p_sub = pivot("subsidy_gap")
@@ -1207,10 +1214,10 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
                 cbar_kws={**cbar_kw, "label": "vol gap $/cwt"}, **hm_kw)
     axes[0, 1].set_title("Gap Decomposition: Subsidy vs Vol Discount\n"
                          "sub = federal subsidy | vol = RMA cheaper than CME",
-                         fontsize=10)
-    axes[0, 1].set_xlabel("Tenor (weeks)")
+                         fontsize=TITLE_FS)
+    axes[0, 1].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
     axes[0, 1].set_ylabel("")
-    axes[0, 1].set_xticklabels(tick_labels, fontsize=9)
+    axes[0, 1].set_xticklabels(tick_labels, fontsize=TICK_FS)
 
     if has_history:
         # ── Panel 3 (bottom-left): 30-day average gap ──
@@ -1229,10 +1236,10 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
         n_days = int(grid["n_hist"].max()) if "n_hist" in grid.columns else 0
         axes[1, 0].set_title(f"Average Savings — {n_days} recorded day(s)\n"
                              "each day priced with its own curve (never "
-                             "re-priced)", fontsize=10)
-        axes[1, 0].set_xlabel("Tenor (weeks)")
-        axes[1, 0].set_ylabel("Coverage Level")
-        axes[1, 0].set_xticklabels(tick_labels, fontsize=9)
+                             "re-priced)", fontsize=TITLE_FS)
+        axes[1, 0].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
+        axes[1, 0].set_ylabel("Coverage Level", fontsize=LABEL_FS)
+        axes[1, 0].set_xticklabels(tick_labels, fontsize=TICK_FS)
 
         # ── Panel 4 (bottom-right): Richness ──
         p_rich = pivot("richness")
@@ -1261,18 +1268,32 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
                     cbar_kws={**cbar_kw, "label": "x normal"}, **hm_kw)
         axes[1, 1].set_title("Today vs Recorded Avg (x multiple)\n"
                              f"BUY needs ≥{MIN_RICHNESS_BUY:g}x AND +$0.25/cwt vs normal; "
-                             "blank = baseline too small to trust", fontsize=10)
-        axes[1, 1].set_xlabel("Tenor (weeks)")
+                             "blank = baseline too small to trust", fontsize=TITLE_FS)
+        axes[1, 1].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
         axes[1, 1].set_ylabel("")
-        axes[1, 1].set_xticklabels(tick_labels, fontsize=9)
+        axes[1, 1].set_xticklabels(tick_labels, fontsize=TICK_FS)
     else:
         axes[1, 0].set_visible(False)
         axes[1, 1].set_visible(False)
 
+    # Sweep every axis rather than styling each panel: the Y tick labels (coverage levels)
+    # and the colour bars are created by seaborn and never touched above, so setting sizes
+    # panel-by-panel left exactly those two unreadable. Doing it in one pass also means a
+    # future fifth panel inherits the sizes instead of quietly reverting to the 10pt default.
+    for ax in axes.flat:
+        ax.tick_params(axis="both", labelsize=TICK_FS)
+        for lbl in ax.get_yticklabels():
+            lbl.set_rotation(0)          # coverage levels read horizontally
+        cb = getattr(ax.collections[0], "colorbar", None) if ax.collections else None
+        if cb is not None:
+            cb.ax.tick_params(labelsize=TICK_FS - 2)
+            if cb.ax.get_ylabel():
+                cb.ax.set_ylabel(cb.ax.get_ylabel(), fontsize=LABEL_FS - 1)
+
     fig.suptitle(
         f"LRP Savings Signal  —  {label}  —  Spot ${spot:.2f}/cwt  —  "
         f"{sales_today()}  —  CME: {cme_source}",
-        fontsize=13, fontweight="bold")
+        fontsize=18, fontweight="bold")
     note = None
     if estimated:
         note = ("ESTIMATED — NO RMA DATA TODAY — premiums are model "

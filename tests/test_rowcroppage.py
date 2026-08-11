@@ -651,3 +651,10 @@ def test_no_map_prose_hardcodes_the_rho_band_or_the_crop_list():
     blob = json.dumps(payload)
     assert "0.55&ndash;0.85" not in blob
     assert "Corn, Soybeans and Wheat" not in blob
+
+
+def test_hover_outlines_what_a_click_would_select(html):
+    """Nation level: clicking a county zooms to its STATE, so the state is what gets outlined.
+    State level: the click drills into that county, so the county does. Same rule as the PRF
+    map — the highlight promises exactly what the click delivers."""
+    assert 'showHover(level === 0 ? (stateById[String(d.id).slice(0, 2)] || d) : d);' in html

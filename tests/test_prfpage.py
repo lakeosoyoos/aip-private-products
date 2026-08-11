@@ -977,3 +977,19 @@ def test_a_county_gets_the_row_swept_under_its_own_cap(conn):
         cell = payload["counties"][fips]["Grazing"]["0.9"]
         for di in cell["g"]:
             assert max(pols[detail[di]["np"]][1]) <= cap
+
+
+def test_hover_outlines_what_a_click_would_select(merged):
+    """At the nation level a click on a county zooms to its STATE, so outlining the county
+    there advertises a selection the click will not make. The outline follows the drill level:
+    state at level 0, county at level 1, grid cell at level 2.
+
+    Asserted structurally because the behaviour lives in one expression; it was verified in
+    the browser by comparing rendered bounding boxes (nation: 148.5 wide vs the county's 7.9;
+    state and grid: exact match).
+    """
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    assert 'showHover(level === 0 ? (stateById[String(d.id).slice(0, 2)] || d) : d);' in html
+    # a county with no state feature must still highlight rather than blank out
+    assert "|| d)" in html

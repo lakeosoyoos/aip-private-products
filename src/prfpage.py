@@ -1621,7 +1621,12 @@ var DATA = __PAYLOAD__;
 
   function hover(ev, d) {
     d3.select(this).classed("hovered", true);
-    showHover(d);
+    // Outline what a CLICK would SELECT, not what the cursor is literally over. At the
+    // nation level a click on a county zooms to its STATE, so tracing the county there
+    // advertises a selection the click will not make; at state level the click does drill
+    // into that county, so the county is right. The tooltip keeps describing the county
+    // either way, because the choropleth is shaded by county at every level.
+    showHover(level === 0 ? (stateById[String(d.id).slice(0, 2)] || d) : d);
     tip.style.display = "block";
     tip.innerHTML = metric === "cbv" ? cbvTip(d) : optTip(d);
     var wrap = document.getElementById("mapWrap").getBoundingClientRect();

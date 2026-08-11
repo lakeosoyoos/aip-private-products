@@ -885,13 +885,17 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div class="sub" id="pageSub">Generated __GENERATED__.</div>
 </header>
 <div class="filters">
-  <label>Show <select id="mSel">
-    <option value="cbv">County multiplier — CBV ($/acre)</option>
-    <option value="win">Best win rate (%)</option>
-    <option value="net">Best return per $1 of protection</option>
-    <option value="acre">Best return per ACRE ($)</option>
-    <option value="comm">Commission per acre ($)</option>
-  </select></label>
+  <!-- WHOSE MONEY. Every metric here answers one of two questions and they sat in one
+       dropdown together: four describe the PRODUCER's outcome, one describes the AGENCY's.
+       The lens picks the question and the Show list then offers only the metrics that answer
+       it. Nothing was removed — all five are still reachable, just sorted. -->
+  <label>Lens
+    <span class="seg" id="lensSeg">
+      <button data-lens="buy" class="on">Buy — producer</button>
+      <button data-lens="sell">Sell — agency</button>
+    </span>
+  </label>
+  <label>Show <select id="mSel"></select></label>
   <label>Intended use <select id="fUse"></select></label>
   <label id="covWrap">Coverage
     <span class="seg" id="covSeg"></span>
@@ -1911,6 +1915,39 @@ var DATA = __PAYLOAD__;
   function onControlChange() {
     if (isDerived()) applyMetric(); else refresh();
   }
+
+  // ---------------- lens: which question the Show list answers
+  // BUY holds the four producer metrics. CBV belongs there because it is the producer's
+  // dollar protection per acre; it also scales commission, which the Sell tooltip already
+  // spells out arithmetically rather than duplicating as a metric.
+  var LENS = { buy: ["cbv", "win", "net", "acre"], sell: ["comm"] };
+  var lens = "buy";
+
+  function fillMetricSelect() {
+    var keys = LENS[lens];
+    mSel.innerHTML = keys.map(function (k) {
+      return '<option value="' + k + '">' + esc(METRICS[k].legend) + '</option>';
+    }).join("");
+    if (keys.indexOf(metric) < 0) {   // current metric is not in this lens: take its first
+      metric = keys[0];
+      mSel.value = metric;
+      syncControls();
+      applyMetric();
+    } else {
+      mSel.value = metric;
+    }
+  }
+
+  document.getElementById("lensSeg").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-lens]");
+    if (!b || b.dataset.lens === lens) return;
+    lens = b.dataset.lens;
+    this.querySelectorAll("button").forEach(function (x) {
+      x.classList.toggle("on", x.dataset.lens === lens);
+    });
+    fillMetricSelect();
+  });
+  fillMetricSelect();
 
   // ---------------- wiring
   mSel.addEventListener("change", function () {

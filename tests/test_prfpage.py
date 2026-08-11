@@ -550,9 +550,14 @@ def test_render_embeds_payload_and_assets(merged):
 def test_render_offers_all_four_metrics_and_the_shared_controls(merged):
     html = render_prf_page_html(build_prf_page_payload(merged),
                                 d3_js="", topojson_js="", atlas={})
-    for opt in ('value="cbv"', 'value="win"', 'value="net"', 'value="acre"'):
-        assert opt in html
+    # The four producer metrics are no longer static <option> markup — the Show list is
+    # built from the LENS map when a lens is chosen — so assert they are OFFERED rather than
+    # that they are hardcoded in the HTML.
+    for key in ("cbv", "win", "net", "acre"):
+        assert f'"{key}"' in html and f"{key}:" in html
+    assert 'var LENS = { buy: ["cbv", "win", "net", "acre"]' in html
     assert 'id="mSel"' in html            # the metric dropdown
+    assert 'id="lensSeg"' in html         # ...and the lens that fills it
     assert 'id="fUse"' in html            # one intended-use control
     assert 'id="covSeg"' in html          # coverage level
     assert 'id="fOrganic"' in html and 'id="fYear"' in html
@@ -837,12 +842,11 @@ def test_render_offers_the_commission_metric_and_its_aip_selector(merged, tmp_pa
     p = build_prf_page_payload(
         merged, commission_csv=_write_commission(tmp_path, [("NA", "NAU", 12.5, "")]))
     html = render_prf_page_html(p, d3_js="", topojson_js="", atlas={})
-    assert 'value="comm"' in html          # the 5th dropdown option
+    assert 'sell: ["comm"]' in html        # the 5th metric, now under the agency lens
     assert 'id="fAip"' in html             # which AIP's rate to apply
     assert "NAU" in html and "12.5" in html
-    # the four producer metrics are untouched
-    for opt in ('value="cbv"', 'value="win"', 'value="net"', 'value="acre"'):
-        assert opt in html
+    # the four producer metrics are untouched, just sorted under the other lens
+    assert 'buy: ["cbv", "win", "net", "acre"]' in html
 
 
 def test_render_states_the_commission_formula_and_its_caveats(merged):
@@ -993,3 +997,37 @@ def test_hover_outlines_what_a_click_would_select(merged):
     assert 'showHover(level === 0 ? (stateById[String(d.id).slice(0, 2)] || d) : d);' in html
     # a county with no state feature must still highlight rather than blank out
     assert "|| d)" in html
+
+
+def test_the_lens_sorts_the_metrics_by_whose_money_they_describe(merged):
+    """Four of the five PRF metrics describe the PRODUCER's outcome and one describes the
+    AGENCY's, and they sat in a single Show dropdown together. The lens picks the question
+    first; the Show list then offers only the metrics that answer it.
+
+    The point of this test is that NOTHING WAS DROPPED in the sort. Every metric the map ever
+    offered must appear under exactly one lens.
+    """
+    import re
+
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    m = re.search(r"var LENS = \{ buy: \[([^\]]*)\], sell: \[([^\]]*)\] \}", html)
+    assert m, "the lens map must be present"
+    buy = re.findall(r'"(\w+)"', m.group(1))
+    sell = re.findall(r'"(\w+)"', m.group(2))
+
+    assert buy == ["cbv", "win", "net", "acre"]
+    assert sell == ["comm"]
+    # every metric is reachable, and none is reachable from both
+    assert set(buy) | set(sell) == {"cbv", "win", "net", "acre", "comm"}
+    assert not (set(buy) & set(sell))
+
+
+def test_switching_lens_cannot_strand_the_map_on_a_hidden_metric(merged):
+    """Selecting the agency lens while a producer metric is active must move the map to a
+    metric that lens actually offers — otherwise the map keeps shading a metric the Show box
+    no longer lists, and the legend and the dropdown disagree."""
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    assert "if (keys.indexOf(metric) < 0) {" in html
+    assert "metric = keys[0];" in html

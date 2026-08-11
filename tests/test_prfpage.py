@@ -637,49 +637,57 @@ def test_commission_csv_missing_file_is_graceful(tmp_path):
     assert c["aips"] == [] and c["with_rate"] == 0 and c["row_count"] == 0
 
 
-def test_shipped_seed_csv_lists_aips_and_labels_any_rates_as_sample():
-    """The committed file lists AIPs, and any rate it carries is LABELLED sample.
+def test_shipped_seed_rates_are_labelled_as_a_regulatory_CEILING():
+    """The committed file lists AIPs, and every rate it carries is labelled for what it is.
 
-    This test used to assert with_rate == 0 — "never commit a made-up rate". The file now
-    deliberately ships a sample AIP x region rate card so the commission map renders before
-    real rates are entered. The guard therefore moves rather than disappears: invented
-    numbers may ship, but they may never ship UNMARKED, because an unlabelled plausible rate
-    is indistinguishable from a negotiated one and would be quoted to a producer as real.
+    This guard has moved twice, and the reason is the same each time: a plausible unlabelled
+    rate is indistinguishable from a negotiated one and would be quoted to a producer as real.
+    First it forbade committing any rate at all. Then it allowed rates that were marked SAMPLE.
+    The file now ships neither — it ships the SRA compensation CEILING, 80% of A&O, which is
+    documented and citable but is an UPPER BOUND rather than an estimate of what the agency
+    earns. So the label it must carry is that one.
     """
     c = load_aip_commission()
     assert c["row_count"] >= 10
     assert c["path"] == "data/seed/aip_commission.csv"
 
     raw = (Path(__file__).resolve().parents[1] / "data/seed/aip_commission.csv").read_text()
-    assert "SAMPLE DATA" in raw.upper(), "seed rates ship without a sample-data warning"
-    if c["with_rate"]:
-        for a in c["aips"]:
-            if a["pct"] is not None or a["by_region"]:
-                assert "sample" in a["notes"].lower(), (
-                    f"{a['name']} carries a rate with no 'sample' note — if this is a real "
-                    f"negotiated rate, drop the sample banner from the file header")
+    up = raw.upper()
+    assert "CEILING" in up or "UPPER BOUND" in up, "shipped rates must be marked as a ceiling"
+    assert "80 PERCENT" in up or "80%" in up, "the cap's basis must be stated"
+    assert "III(A)(4)(B)" in up, "cite the SRA provision the number comes from"
+    # and every rated AIP still carries a note saying where its number came from
+    for a in c["aips"]:
+        if a["by_region"] or a["pct"] is not None:
+            assert a["notes"], f"{a['code']} carries a rate with no provenance note"
 
 
-def test_region_rates_are_per_aip_and_per_region():
-    """A rate is a cell in an AIP x region table, not a property of either alone."""
+def test_the_rate_table_is_still_per_AIP_and_per_region(tmp_path):
+    """A rate is a cell in an AIP x region x product table, not a property of any one axis.
+
+    The SHIPPED card is uniform across AIPs and regions, because a regulatory ceiling does not
+    vary by either — so asserting variation in the shipped file would now be asserting that
+    the ceiling is wrong. What must still hold is that the MECHANISM carries variation, since
+    the whole point of the file is that an agency replaces the ceiling with its real,
+    negotiated, per-AIP and per-region card.
+    """
     c = load_aip_commission()
     assert c["regions"], "no region columns parsed from the seed CSV"
-    rated = [a for a in c["aips"] if a["by_region"]]
-    assert rated, "no AIP carries a per-region rate"
-    # Varies WITHIN an AIP across regions...
-    assert any(len(set(a["by_region"].values())) > 1 for a in rated), \
-        "every AIP charges one flat rate across regions — the region axis does nothing"
-    # ...and BETWEEN AIPs for the same region...
-    first = c["regions"][0]
-    vals = {a["by_region"].get(first) for a in rated if first in a["by_region"]}
-    assert len(vals) > 1, f"every AIP charges the same rate in {first}"
-    # ...and rates OVERLAP across AIPs (the same rate recurs), which is why the map cannot
-    # be reconstructed from the AIP axis alone.
-    allv = [a["by_region"].get(first) for a in rated if first in a["by_region"]]
-    assert len(allv) > len(set(allv)), "no rate is shared by two AIPs"
+    assert [a for a in c["aips"] if a["by_region"]], "no AIP carries a per-region rate"
 
+    csv_path = tmp_path / "real.csv"
+    csv_path.write_text(
+        "aip_code,aip_name,product,Pacific,Mountain,Central,Eastern,notes\n"
+        "A1,Alpha,PRF,20,18,16,14,negotiated\n"
+        "B2,Beta,PRF,19,17,15,13,negotiated\n")
+    got = load_aip_commission(str(csv_path), product="PRF")
+    rated = [a for a in got["aips"] if a["by_region"]]
+    assert len(rated) == 2
+    # varies WITHIN an AIP across regions...
+    assert all(len(set(a["by_region"].values())) > 1 for a in rated)
+    # ...and BETWEEN AIPs in the same region
+    assert len({a["by_region"]["Pacific"] for a in rated}) == 2
 
-# ------------------------------------------------------ stored premium rate-sum
 
 def test_rate_sum_travels_with_the_best_net_grid(conn):
     """The county's premium must come from the SAME grid that won on net.
@@ -1059,17 +1067,25 @@ def test_a_commission_rate_is_never_borrowed_from_another_product(tmp_path):
         "instead of borrowing another product's card")
 
 
-def test_the_shipped_card_carries_no_livestock_rate_yet(tmp_path):
-    """The shipped seed has sample MPCI rates and deliberately BLANK livestock ones. Blank is
-    unknown, not zero — the two are different claims and must render differently."""
-    from src.prfpage import load_aip_commission
+def test_every_product_carries_a_ceiling_and_says_which_are_unconfirmed():
+    """Every product now has a rate, but they are not equally well founded and the file must
+    not pretend otherwise.
 
-    for prod in ("PRF", "ROWCROP"):
-        assert load_aip_commission(product=prod)["with_rate"] > 0
-    for prod in ("LRP", "DRP", "LGM"):
-        r = load_aip_commission(product=prod)
-        assert r["with_rate"] == 0, f"{prod} should have no rate on file until entered"
-        assert r["aips"], f"{prod} should still list the AIPs, just without rates"
+    ROWCROP's A&O category is published (revenue plans, 18.5%), so its 14.8% ceiling is cited.
+    PRF is an area/index plan that maps to no published A&O category, and LRP/LGM/DRP are
+    reinsured under the LPRA rather than the SRA, whose A&O rate RMA does not appear to
+    publish. Those four use the LOW end of the documented 12-21.9% buy-up range, so the error
+    runs toward UNDERSTATING agency revenue — and each row says so.
+    """
+    cited, assumed = {"ROWCROP"}, {"PRF", "LRP", "DRP", "LGM"}
+    for prod in cited | assumed:
+        c = load_aip_commission(product=prod)
+        assert c["with_rate"] == len(c["aips"]) > 0, f"{prod} should carry a ceiling"
+        note = c["aips"][0]["notes"].upper()
+        assert "80%" in note or "80 PERCENT" in note, f"{prod} note must state the cap basis"
+        if prod in assumed:
+            assert "UNCONFIRMED" in note or "NOT PUBLISHED" in note, (
+                f"{prod}'s A&O rate is assumed and the note must admit it")
 
 
 def test_a_card_with_no_product_column_serves_whoever_asked(tmp_path):

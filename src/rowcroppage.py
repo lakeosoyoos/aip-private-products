@@ -2109,6 +2109,14 @@ _TEMPLATE = r"""<!DOCTYPE html>
 </header>
 <div class="filters">
   <span class="fam" id="famTag">opportunity</span>
+  <!-- WHOSE MONEY. Twelve metrics in one Show list, answering two different questions.
+       The lens picks the question; Show then offers only what answers it. Nothing removed. -->
+  <label>Lens
+    <span class="seg" id="lensSeg">
+      <button data-lens="buy" class="on">Buy — producer</button>
+      <button data-lens="sell">Sell — agency</button>
+    </span>
+  </label>
   <label>Show <select id="mSel"></select></label>
   <label>Band <span class="seg" id="bandSeg"></span></label>
   <label>Crop <select id="fCrop"></select></label>
@@ -2483,12 +2491,51 @@ var DATA = __PAYLOAD__;
       fEvidence = document.getElementById("fEvidence"),
       fAip = document.getElementById("fAip");
 
-  METRIC_ORDER.forEach(function (k) {
-    var o = document.createElement("option");
-    o.value = k; o.textContent = METRICS[k].label;
-    mSel.appendChild(o);
+  // WHICH LENS EACH METRIC BELONGS TO.
+  //
+  // BUY is what the PRODUCER gets and what it costs them to be wrong: the subsidy on the
+  // table, the same figure discounted for basis risk, the per-acre and per-dollar returns,
+  // and the miss rate itself.
+  //
+  // SELL is agency revenue plus the two market-shape metrics an agent prospects with —
+  // penetration (who has not bought) — and the two DIVERGENCE views, which belong here
+  // because they exist to warn the person being pulled: they mark where the agency's best
+  // county is NOT the producer's best county. A producer never needs that comparison; an
+  // agent deciding where to spend a week does.
+  var LENS = {
+    buy:  ["total", "acre", "adjtotal", "adjacre", "prodac", "ret", "miss"],
+    sell: ["commac", "commtot", "pen", "gap", "bgap"]
+  };
+  var lens = "buy";
+
+  function fillMetricSelect() {
+    var keys = LENS[lens];
+    mSel.innerHTML = "";
+    keys.forEach(function (k) {
+      if (!METRICS[k]) return;
+      var o = document.createElement("option");
+      o.value = k; o.textContent = METRICS[k].label;
+      mSel.appendChild(o);
+    });
+    if (keys.indexOf(metric) < 0) {   // active metric is not in this lens: take its first
+      metric = keys[0];
+      mSel.value = metric;
+      if (typeof applyMetric === "function") applyMetric(); else refresh();
+    } else {
+      mSel.value = metric;
+    }
+  }
+
+  document.getElementById("lensSeg").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-lens]");
+    if (!b || b.dataset.lens === lens) return;
+    lens = b.dataset.lens;
+    this.querySelectorAll("button").forEach(function (x) {
+      x.classList.toggle("on", x.dataset.lens === lens);
+    });
+    fillMetricSelect();
   });
-  mSel.value = metric;
+  fillMetricSelect();
 
   CROPS.forEach(function (name, i) {
     var o = document.createElement("option");

@@ -658,3 +658,35 @@ def test_hover_outlines_what_a_click_would_select(html):
     State level: the click drills into that county, so the county does. Same rule as the PRF
     map — the highlight promises exactly what the click delivers."""
     assert 'showHover(level === 0 ? (stateById[String(d.id).slice(0, 2)] || d) : d);' in html
+
+
+def test_the_lens_assigns_every_metric_to_exactly_one_side(html):
+    """Twelve metrics answered two different questions from a single Show list. The lens picks
+    the question first. The property that matters is completeness, not the particular split:
+    every metric METRIC_ORDER offers must be reachable under exactly one lens, so the sort
+    cannot silently drop one or make it appear twice.
+    """
+    import re
+
+    order = re.search(r"var METRIC_ORDER = \[(.*?)\]", html, re.S).group(1)
+    lens = re.search(r"var LENS = \{\s*buy:\s*\[(.*?)\],\s*sell:\s*\[(.*?)\]", html, re.S)
+    assert lens, "the lens map must be present"
+    every = set(re.findall(r'"(\w+)"', order))
+    buy = set(re.findall(r'"(\w+)"', lens.group(1)))
+    sell = set(re.findall(r'"(\w+)"', lens.group(2)))
+
+    assert every, "METRIC_ORDER should not be empty"
+    assert buy | sell == every, f"unassigned: {sorted(every - buy - sell)}"
+    assert not (buy & sell), f"in both lenses: {sorted(buy & sell)}"
+
+
+def test_the_divergence_views_sit_with_the_agent(html):
+    """Both DIVERGENCE metrics mark where the agency's best county is NOT the producer's. A
+    producer never needs that comparison; an agent deciding where to spend a week does, and
+    is the one the warning is for."""
+    import re
+
+    lens = re.search(r"var LENS = \{\s*buy:\s*\[(.*?)\],\s*sell:\s*\[(.*?)\]", html, re.S)
+    sell = set(re.findall(r'"(\w+)"', lens.group(2)))
+    assert {"gap", "bgap"} <= sell
+    assert {"commac", "commtot"} <= sell        # and the agency dollars themselves

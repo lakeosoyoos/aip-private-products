@@ -1067,25 +1067,31 @@ def test_a_commission_rate_is_never_borrowed_from_another_product(tmp_path):
         "instead of borrowing another product's card")
 
 
-def test_every_product_carries_a_ceiling_and_says_which_are_unconfirmed():
-    """Every product now has a rate, but they are not equally well founded and the file must
-    not pretend otherwise.
+def test_every_product_carries_the_same_uniform_ceiling():
+    """One rate, every product: 17.52% = 80% x 21.9%, the top of the documented A&O range.
 
-    ROWCROP's A&O category is published (revenue plans, 18.5%), so its 14.8% ceiling is cited.
-    PRF is an area/index plan that maps to no published A&O category, and LRP/LGM/DRP are
-    reinsured under the LPRA rather than the SRA, whose A&O rate RMA does not appear to
-    publish. Those four use the LOW end of the documented 12-21.9% buy-up range, so the error
-    runs toward UNDERSTATING agency revenue — and each row says so.
+    This is a deliberate simplification over per-plan A&O rates, and it is NOT the same as
+    each plan's own ceiling — PRF's own A&O row (area plans not widely available in 2008,
+    20.1%) implies 16.08%, and 16% is what an operating agency reports being paid. The uniform
+    figure therefore sits ABOVE the real PRF rate. That is the intended direction for a
+    ceiling, but the file has to say so rather than let a reader assume 17.52% is earned.
     """
-    cited, assumed = {"ROWCROP"}, {"PRF", "LRP", "DRP", "LGM"}
-    for prod in cited | assumed:
+    for prod in ("PRF", "ROWCROP", "LRP", "DRP", "LGM"):
         c = load_aip_commission(product=prod)
         assert c["with_rate"] == len(c["aips"]) > 0, f"{prod} should carry a ceiling"
-        note = c["aips"][0]["notes"].upper()
-        assert "80%" in note or "80 PERCENT" in note, f"{prod} note must state the cap basis"
-        if prod in assumed:
-            assert "UNCONFIRMED" in note or "NOT PUBLISHED" in note, (
-                f"{prod}'s A&O rate is assumed and the note must admit it")
+        for a in c["aips"]:
+            assert set(a["by_region"].values()) == {17.52}, (
+                f"{prod}/{a['code']} should carry the uniform 17.52% ceiling")
+            assert "80%" in a["notes"] and "21.9%" in a["notes"]
+
+    raw = (Path(__file__).resolve().parents[1] / "data/seed/aip_commission.csv").read_text()
+    up = raw.upper()
+    assert "III(A)(4)(B)" in up, "cite the SRA provision the 80% comes from"
+    assert "MAXIMUM" in up or "CEILING" in up
+    # the override must be stated, not silent: a reader has to be able to find out that the
+    # per-plan rates differ and that PRF's own row is lower
+    assert "16.08" in raw, "the PRF-specific rate this overrides must be recorded"
+    assert "LPRA" in up, "livestock being unverified must stay on the record"
 
 
 def test_a_card_with_no_product_column_serves_whoever_asked(tmp_path):

@@ -1,101 +1,102 @@
 # aip_commission.csv - agency commission rate, per AIP, per PRODUCT, per region.
 #
-# *** THESE ARE REGULATORY CEILINGS, NOT YOUR RATE CARD, AND NOT AN ESTIMATE. ***
+# *** THIS IS THE REGULATORY MAXIMUM. IT IS NOT YOUR RATE CARD AND NOT AN ESTIMATE. ***
 #
-# RMA does not set agent commission. It CAPS it. 2026 SRA III(a)(4)(B):
+# Every product carries 17.52% = 80% x 21.9% A&O.
+#
+# 80% is the SRA compensation cap, 2026 SRA III(a)(4)(B):
 #
 #   "...shall not pay total compensation in excess of 80 percent of the total amount of
 #    A&O subsidy and CAT LAE ... for such State."
 #
 # 100 percent is permitted only where the AIP earned an underwriting gain that year
-# (III(a)(4)(C)). In force since RY2011.
+# (III(a)(4)(C)). In force since RY2011. The separate processing allowance the SRA permits
+# (up to 5 percent of A&O, not counted as compensation) is deliberately EXCLUDED.
 #
-# The SRA also allows a processing allowance of up to 5 percent of A&O that is not counted as
-# compensation. It is DELIBERATELY NOT INCLUDED in the figures below - these are the
-# compensation cap alone.
+# 21.9% is the TOP of the documented A&O range for buy-up coverage - the APH-policy rate in
+# CRS R45291 Table 2, which lists 12.0% to 21.9% depending on plan type. Applying the top
+# rate to every product is a deliberate choice to state a single, uniform CEILING rather than
+# mix per-plan rates of differing provenance.
 #
-# So the numbers below are 0.80 x the A&O subsidy rate for the product:
+# WHAT THIS DELIBERATELY OVERRIDES. The per-plan A&O rates are NOT all 21.9%:
 #
-#   ROWCROP  A&O 18.5% (revenue plans)          -> cap 14.8%
-#   PRF      A&O 12.0% assumed - see note col   -> cap  9.6%
-#   LRP      A&O 12.0% assumed - see note col   -> cap  9.6%
-#   DRP      A&O 12.0% assumed - see note col   -> cap  9.6%
-#   LGM      A&O 12.0% assumed - see note col   -> cap  9.6%
+#   revenue plans                             18.5%  ->  14.80%
+#   area plans, not widely available in 2008  20.1%  ->  16.08%   <- PRF's row
+#   area plans generally                      12.0%  ->   9.60%
+#   APH policies                              21.9%  ->  17.52%   <- used for everything here
 #
-# TWO THINGS THIS IS NOT.
+# So PRF reads 17.52% here rather than the 16.08% its own A&O row implies - and 16% is what an
+# operating agency reports actually being paid on PRF. The uniform ceiling is therefore ABOVE
+# the real PRF rate by about a point and a half. That is the intended direction (a ceiling
+# overstates), but it means the PRF agency figures are not the ones the agency earns.
 #
-# 1. It is not what you earn. The cap binds by STATE across an AIP's whole book, not per
-#    policy, and negotiated commission normally sits below it. Every agency figure the app
-#    shows from this file is an UPPER BOUND. Read them as "at most".
+# LIVESTOCK IS UNVERIFIED EITHER WAY. LRP, LGM and DRP are reinsured under the LPRA, not the
+# SRA, and RMA does not appear to publish their A&O rate at all; 21.9% is the SRA's top rate
+# standing in for a number nobody here has.
 #
-# 2. For PRF and the three livestock products it is not even a cited ceiling. PRF is an
-#    area/index plan that does not map cleanly to the published APH (21.9%) or revenue
-#    (18.5%) A&O categories, and LRP/LGM/DRP are reinsured under the LPRA, not the SRA,
-#    whose A&O rate RMA does not appear to publish. Those four use 12.0% - the LOW end of
-#    the documented 12-21.9% buy-up range - so the error runs toward understating agency
-#    revenue rather than overstating it. Replace them with your real schedule when you have
-#    it; a negotiated rate beats any published ceiling.
+# THE CAP BINDS BY STATE across an AIP's whole book, not per policy. Read every agency figure
+# the app derives from this file as "at most".
 #
 # regions : percent of TOTAL premium (the subsidised premium, not the producer's share)
 # blank   : unknown. NOT zero - the app renders those differently.
 aip_code,aip_name,product,Pacific,Mountain,Central,Eastern,notes
-RH,ACE American Insurance Company (Rain and Hail),ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-WN,American Agri-Business Insurance Company (AgriSompo),ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-FA,American Agricultural Insurance Company (AFBIS),ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-CP,Clear Blue Insurance Company (Precision Risk Mgmt),ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-CM,Country Mutual Insurance Company (COUNTRY Financial),ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-FH,Farmers Mutual Hail Insurance Company of Iowa,ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-GA,Great American Insurance Company,ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-HU,Hudson Insurance Company,ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-NA,NAU Country Insurance Company,ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-PS,Palomar Specialty Insurance Company,ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-PL,Producers Agriculture Insurance Company (ProAg),ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-EF,Rural Community Insurance Company (RCIS),ROWCROP,14.8,14.8,14.8,14.8,"SRA cap = 80% x A&O 18.5% (revenue plans, cited)"
-RH,ACE American Insurance Company (Rain and Hail),PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-WN,American Agri-Business Insurance Company (AgriSompo),PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-FA,American Agricultural Insurance Company (AFBIS),PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-CP,Clear Blue Insurance Company (Precision Risk Mgmt),PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-CM,Country Mutual Insurance Company (COUNTRY Financial),PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-FH,Farmers Mutual Hail Insurance Company of Iowa,PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-GA,Great American Insurance Company,PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-HU,Hudson Insurance Company,PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-NA,NAU Country Insurance Company,PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-PS,Palomar Specialty Insurance Company,PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-PL,Producers Agriculture Insurance Company (ProAg),PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-EF,Rural Community Insurance Company (RCIS),PRF,9.6,9.6,9.6,9.6,SRA cap = 80% x A&O 12.0% (LOW END of the 12-21.9% buy-up range - PRF's A&O category unconfirmed)
-RH,ACE American Insurance Company (Rain and Hail),LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-WN,American Agri-Business Insurance Company (AgriSompo),LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-FA,American Agricultural Insurance Company (AFBIS),LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-CP,Clear Blue Insurance Company (Precision Risk Mgmt),LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-CM,Country Mutual Insurance Company (COUNTRY Financial),LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-FH,Farmers Mutual Hail Insurance Company of Iowa,LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-GA,Great American Insurance Company,LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-HU,Hudson Insurance Company,LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-NA,NAU Country Insurance Company,LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-PS,Palomar Specialty Insurance Company,LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-PL,Producers Agriculture Insurance Company (ProAg),LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-EF,Rural Community Insurance Company (RCIS),LRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-RH,ACE American Insurance Company (Rain and Hail),DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-WN,American Agri-Business Insurance Company (AgriSompo),DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-FA,American Agricultural Insurance Company (AFBIS),DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-CP,Clear Blue Insurance Company (Precision Risk Mgmt),DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-CM,Country Mutual Insurance Company (COUNTRY Financial),DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-FH,Farmers Mutual Hail Insurance Company of Iowa,DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-GA,Great American Insurance Company,DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-HU,Hudson Insurance Company,DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-NA,NAU Country Insurance Company,DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-PS,Palomar Specialty Insurance Company,DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-PL,Producers Agriculture Insurance Company (ProAg),DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-EF,Rural Community Insurance Company (RCIS),DRP,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-RH,ACE American Insurance Company (Rain and Hail),LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-WN,American Agri-Business Insurance Company (AgriSompo),LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-FA,American Agricultural Insurance Company (AFBIS),LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-CP,Clear Blue Insurance Company (Precision Risk Mgmt),LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-CM,Country Mutual Insurance Company (COUNTRY Financial),LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-FH,Farmers Mutual Hail Insurance Company of Iowa,LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-GA,Great American Insurance Company,LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-HU,Hudson Insurance Company,LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-NA,NAU Country Insurance Company,LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-PS,Palomar Specialty Insurance Company,LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-PL,Producers Agriculture Insurance Company (ProAg),LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
-EF,Rural Community Insurance Company (RCIS),LGM,9.6,9.6,9.6,9.6,"SRA cap = 80% x A&O 12.0% (LPRA rate NOT PUBLISHED - conservative floor, replace when known)"
+RH,ACE American Insurance Company (Rain and Hail),PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+WN,American Agri-Business Insurance Company (AgriSompo),PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+FA,American Agricultural Insurance Company (AFBIS),PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+CP,Clear Blue Insurance Company (Precision Risk Mgmt),PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+CM,Country Mutual Insurance Company (COUNTRY Financial),PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+FH,Farmers Mutual Hail Insurance Company of Iowa,PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+GA,Great American Insurance Company,PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+HU,Hudson Insurance Company,PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+NA,NAU Country Insurance Company,PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+PS,Palomar Specialty Insurance Company,PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+PL,Producers Agriculture Insurance Company (ProAg),PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+EF,Rural Community Insurance Company (RCIS),PRF,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+RH,ACE American Insurance Company (Rain and Hail),ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+WN,American Agri-Business Insurance Company (AgriSompo),ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+FA,American Agricultural Insurance Company (AFBIS),ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+CP,Clear Blue Insurance Company (Precision Risk Mgmt),ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+CM,Country Mutual Insurance Company (COUNTRY Financial),ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+FH,Farmers Mutual Hail Insurance Company of Iowa,ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+GA,Great American Insurance Company,ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+HU,Hudson Insurance Company,ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+NA,NAU Country Insurance Company,ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+PS,Palomar Specialty Insurance Company,ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+PL,Producers Agriculture Insurance Company (ProAg),ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+EF,Rural Community Insurance Company (RCIS),ROWCROP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+RH,ACE American Insurance Company (Rain and Hail),LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+WN,American Agri-Business Insurance Company (AgriSompo),LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+FA,American Agricultural Insurance Company (AFBIS),LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+CP,Clear Blue Insurance Company (Precision Risk Mgmt),LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+CM,Country Mutual Insurance Company (COUNTRY Financial),LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+FH,Farmers Mutual Hail Insurance Company of Iowa,LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+GA,Great American Insurance Company,LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+HU,Hudson Insurance Company,LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+NA,NAU Country Insurance Company,LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+PS,Palomar Specialty Insurance Company,LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+PL,Producers Agriculture Insurance Company (ProAg),LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+EF,Rural Community Insurance Company (RCIS),LRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+RH,ACE American Insurance Company (Rain and Hail),DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+WN,American Agri-Business Insurance Company (AgriSompo),DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+FA,American Agricultural Insurance Company (AFBIS),DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+CP,Clear Blue Insurance Company (Precision Risk Mgmt),DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+CM,Country Mutual Insurance Company (COUNTRY Financial),DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+FH,Farmers Mutual Hail Insurance Company of Iowa,DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+GA,Great American Insurance Company,DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+HU,Hudson Insurance Company,DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+NA,NAU Country Insurance Company,DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+PS,Palomar Specialty Insurance Company,DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+PL,Producers Agriculture Insurance Company (ProAg),DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+EF,Rural Community Insurance Company (RCIS),DRP,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+RH,ACE American Insurance Company (Rain and Hail),LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+WN,American Agri-Business Insurance Company (AgriSompo),LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+FA,American Agricultural Insurance Company (AFBIS),LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+CP,Clear Blue Insurance Company (Precision Risk Mgmt),LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+CM,Country Mutual Insurance Company (COUNTRY Financial),LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+FH,Farmers Mutual Hail Insurance Company of Iowa,LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+GA,Great American Insurance Company,LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+HU,Hudson Insurance Company,LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+NA,NAU Country Insurance Company,LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+PS,Palomar Specialty Insurance Company,LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+PL,Producers Agriculture Insurance Company (ProAg),LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)
+EF,Rural Community Insurance Company (RCIS),LGM,17.52,17.52,17.52,17.52,SRA cap = 80% x A&O 21.9% (top of the documented buy-up range)

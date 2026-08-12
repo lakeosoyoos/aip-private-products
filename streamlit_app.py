@@ -378,11 +378,13 @@ def _tab_row_crop(mtime: float) -> None:
     """
     st.subheader("Row crop")
     st.caption(
-        "The row-crop private/508(h) catalog — availability map, the per-farm "
-        "basis-risk calculator, product table, coverage-stack analysis, and the "
-        "SERFF filing history behind it."
+        "The row-crop private/508(h) catalog. **Opportunity chart** ranks where the "
+        "unclaimed subsidy is and where the band actually pays; **Opportunity map** draws "
+        "the same numbers; **Availability map** shows which products are sold where. Then "
+        "the per-farm basis-risk calculator, product table, coverage-stack analysis, and "
+        "the SERFF filing history behind it."
     )
-    sub = st.tabs(["Prospects", "Opportunity map", "Availability map", "My Farm",
+    sub = st.tabs(["Opportunity chart", "Opportunity map", "Availability map", "My Farm",
                    "Products", "Stack", "SERFF Filings"])
     with sub[0]:
         _tab_prospects(mtime)
@@ -401,10 +403,11 @@ def _tab_row_crop(mtime: float) -> None:
 
 
 def _tab_opportunity(mtime: float) -> None:
-    """The opportunity choropleth — the map form of what Prospects lists as a table."""
+    """The opportunity choropleth — the map form of what the Opportunity chart lists."""
     st.subheader("Opportunity map — unclaimed subsidy by county")
     st.caption(
-        "The same numbers **Prospects** ranks, drawn instead of listed. Pick a metric from "
+        "The same numbers the **Opportunity chart** ranks, drawn instead of listed. Pick a "
+        "metric from "
         "**Show** inside the map: unclaimed subsidy total or per eligible acre, band "
         "penetration, producer value per acre, producer return per $1 of premium, agency "
         "commission per acre and unclaimed commission, and the DIVERGENCE view — where the "
@@ -432,7 +435,8 @@ def _tab_prospects(mtime: float) -> None:
         st.error(f"The prospect list could not be loaded: {exc}")
         return
 
-    st.subheader("Prospects — where the unclaimed subsidy is, and where the band works")
+    st.subheader("Opportunity chart — where the unclaimed subsidy is, and where the band "
+                 "works")
     st.caption(
         "Every county x crop x band cell, ranked. **Unclaimed subsidy** is unsold eligible "
         "acres x the subsidy a buyer captures per acre — the federal dollars leaving the "

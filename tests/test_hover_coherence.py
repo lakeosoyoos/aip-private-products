@@ -73,3 +73,47 @@ def test_the_rollup_says_it_is_a_range_not_an_average():
         s = _src(f)
         assert "a range, not an average" in s, f"{f} must say what the two numbers are"
         assert "weights" in s, f"{f} should say WHY a mean is not offered"
+
+
+def test_only_one_thing_is_highlighted_at_the_nation_level():
+    """Hovering anywhere in a state at the zoomed-out level highlights the STATE and nothing
+    else. Marking the county under the cursor as well draws a second, smaller highlight inside
+    the first — two things apparently selected, and the inner one promising a county selection
+    the click will not make. Below the nation level the county IS the click target and marks
+    normally, so the class is conditional rather than removed.
+    """
+    for f in COUNTY_SHADED:
+        s = _src(f)
+        assert 'classed("hovered", level !== 0)' in s, (
+            f"{f}: the county mark must be suppressed at the nation level")
+        # Scoped to the COUNTY hover. PRF's hoverGrid marks unconditionally and should:
+        # grid cells are only ever drawn at the deepest level, so there is no level at which
+        # marking one is wrong. Asserting "no unconditional mark anywhere" would forbid that.
+        county_hover = s.split("function hover(ev, d)")[1][:800]
+        assert 'classed("hovered", true)' not in county_hover, (
+            f"{f}: the county mark must be conditional on level")
+
+
+def test_a_hover_handler_that_uses_this_is_called_with_this():
+    """PRF registered `hover(ev, d)` where row crop registered `hover.call(this, ev, d)`.
+
+    Called plainly, `this` inside the handler is not the path, so d3.select(this) selects
+    nothing — which meant PRF's `.county.hovered` CSS rule had never applied since the day it
+    was written. Nobody noticed because the visible county highlight comes from the .hoverline
+    outline added later, so the dead rule was masked by a working feature.
+
+    The rule: a handler whose body touches d3.select(this) must be invoked with .call(this).
+    webmap is exempt and checked separately — its hover takes a plain region object and marks
+    by data match, never touching `this`.
+    """
+    for f in ("src/prfpage.py", "src/rowcroppage.py", "src/drppage.py"):
+        s = _src(f)
+        for m in re.finditer(r'\.on\("mousemove", function \(ev[^)]*\) \{ (\w+)\(', s):
+            raise AssertionError(
+                f"{f}: hover handler {m.group(1)}(...) is called without .call(this); "
+                f"d3.select(this) inside it will select nothing")
+        assert ".call(this," in s, f"{f}: expected at least one bound hover handler"
+
+    web = _src("src/webmap.py")
+    assert "d3.select(this)" not in web, (
+        "webmap's hover marks by data match and must not start relying on `this`")

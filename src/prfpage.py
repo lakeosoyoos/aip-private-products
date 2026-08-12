@@ -1086,7 +1086,11 @@ var DATA = __PAYLOAD__;
   var gCounties = g.append("g");
   var countySel = gCounties.selectAll("path").data(countiesFC).join("path")
       .attr("class", "county").attr("d", path)
-      .on("mousemove", function (ev, d) { hover(ev, d); })
+      // .call(this, ...) — NOT hover(ev, d). Called plainly, `this` inside hover is not
+      // the path, so d3.select(this) selects nothing and the .county.hovered rule has
+      // never applied. The county highlight visible today comes entirely from the
+      // .hoverline outline; this rule was dead from the day it was written.
+      .on("mousemove", function (ev, d) { hover.call(this, ev, d); })
       .on("mouseout", unhover)
       .on("click", function (ev, d) { ev.stopPropagation(); countyClicked(d); });
   g.append("path").attr("class", "statelines").attr("d", path(stateMesh));
@@ -1698,7 +1702,12 @@ var DATA = __PAYLOAD__;
   }
 
   function hover(ev, d) {
-    d3.select(this).classed("hovered", true);
+    // ONE HIGHLIGHT AT A TIME. At the nation level the STATE is the thing being pointed at —
+    // a click selects it, the outline traces it and the tooltip describes it — so the county
+    // under the cursor must NOT also be stroked. Two nested highlights read as two things
+    // selected, and the inner one promises a county selection the click will not make.
+    // Below the nation level the county IS the target, so it marks normally.
+    d3.select(this).classed("hovered", level !== 0);
     // Outline what a CLICK would SELECT, not what the cursor is literally over. At the
     // nation level a click on a county zooms to its STATE, so tracing the county there
     // advertises a selection the click will not make; at state level the click does drill

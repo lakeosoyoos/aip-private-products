@@ -1914,6 +1914,14 @@ _TEMPLATE = r"""<!DOCTYPE html>
   }
   .seg button + button { border-left: 1px solid var(--baseline); }
   .seg button.on { background: #238b45; color: #fff; }
+  /* THE LENS IS A MODE SWITCH, NOT A FILTER, and must not look like one. Every other .seg
+     on these pages selects a value within the current view (coverage, quarter, band) and
+     turns green when active. The lens changes WHOSE NUMBERS the whole page is showing, so it
+     takes the ink colour instead — the same control shape, deliberately a different weight,
+     so the eye does not file it with the filters beside it. Matched by the Streamlit-native
+     segmented control on the LGM and LRP tabs, which have no iframe. */
+  #lensSeg button.on { background: var(--ink); color: #fff; font-weight: 650; }
+  #lensSeg button { padding: 4px 13px; }
   .seg button:disabled { color: var(--muted); cursor: not-allowed; }
   #formulaNote {
     padding: 7px 18px; font-size: 11.5px; color: var(--ink-2); line-height: 1.5;

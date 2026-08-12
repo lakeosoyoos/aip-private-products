@@ -85,3 +85,56 @@ def test_both_levels_state_their_own_font_size():
 def test_the_distinction_survives_greyscale():
     """Colour alone excludes some readers. Size carries the same information."""
     assert "font-size" in APP.split(":root { --tab-main")[1][:2000]
+
+
+def test_the_lens_looks_the_same_on_every_product():
+    """Five products, two implementations, one appearance.
+
+    PRF, row crop and DRP carry the lens INSIDE their map, because switching a Streamlit
+    widget would rerun and re-emit an iframe up to 31 MB. LGM and LRP have no iframe and use
+    the native widget. The two cannot be shared, so they are matched: the same joined-pill
+    shape and the same ink-on-white active state.
+
+    And deliberately NOT the green the filter controls use. Every other .seg on those maps
+    selects a value within the current view; the lens changes whose numbers the whole page
+    shows. Same shape, different weight, so the eye does not file it with the filters.
+    """
+    import pathlib as _p
+
+    root = _p.Path(__file__).resolve().parents[1]
+
+    for f in ("src/prfpage.py", "src/rowcroppage.py", "src/drppage.py"):
+        src = (root / f).read_text()
+        assert "#lensSeg button.on { background: var(--ink); color: #fff;" in src, f
+        assert '.seg button.on { background: #238b45' in src, (
+            f"{f}: the filter segs should stay green — the lens is what differs")
+
+    # the two no-iframe tabs use the widget that matches that shape
+    for f in ("src/lgmpage.py", "lrp_page.py"):
+        src = (root / f).read_text()
+        assert "st.segmented_control(" in src, f"{f} should use the pill control"
+        assert "st.radio(" not in src.split("Lens")[0][-400:], f"{f} still uses a radio"
+
+    app = (root / "streamlit_app.py").read_text()
+    # Scoped by widget KEY, not widget type. Streamlit emits the key as a class on the
+    # element container, and the control's own test id (stButtonGroup) is shared with every
+    # other segmented control in the app — styling by type would repaint unrelated widgets.
+    # The active state is aria-checked; aria-selected is not set on this control.
+    assert ".st-key-lgm_lens button[aria-checked=\"true\"]" in app
+    assert ".st-key-lrp_lens button[aria-checked=\"true\"]" in app
+    assert "#0b0b0b" in app, "active state must match the maps' ink"
+    assert '[data-testid="stSegmentedControl"]' not in app, (
+        "that test id does not exist in this Streamlit — the control is stButtonGroup")
+
+
+def test_every_product_offers_the_same_two_lens_labels():
+    """Identical wording everywhere. "Buy" and "Producer view" would be the same idea and a
+    different product, as far as a reader scanning five tabs is concerned."""
+    import pathlib as _p
+
+    root = _p.Path(__file__).resolve().parents[1]
+    for f in ("src/prfpage.py", "src/rowcroppage.py", "src/drppage.py",
+              "src/lgmpage.py", "lrp_page.py"):
+        src = (root / f).read_text()
+        assert "Buy — producer" in src, f"{f} missing the Buy label"
+        assert "Sell — agency" in src, f"{f} missing the Sell label"

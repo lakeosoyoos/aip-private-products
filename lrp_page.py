@@ -251,8 +251,13 @@ def render():
     # WHOSE MONEY. The four tabs below are organised by ARTIFACT — a chart, a table, a
     # history, a hedge calculator — not by question, and every one of them describes the
     # producer. There was no agency figure anywhere on this tab.
-    lens = st.radio("Lens", ["Buy — producer", "Sell — agency"],
-                    horizontal=True, key="lrp_lens", label_visibility="collapsed")
+    # st.segmented_control, not st.radio: it renders as a joined pill row, which is the
+    # same shape as the #lensSeg control inside the PRF, row-crop and DRP maps. Those three
+    # cannot use a Streamlit widget — switching would rerun and re-emit a 31 MB iframe — so
+    # the consistency has to come from picking the widget that already matches them.
+    lens = st.segmented_control(
+        "Lens", ["Buy — producer", "Sell — agency"], default="Buy — producer",
+        key="lrp_lens", label_visibility="collapsed") or "Buy — producer"
 
     if lens.startswith("Sell"):
         _render_agency(st, grid, commodity, cwt, head)

@@ -1451,8 +1451,13 @@ def render() -> None:
     # WHOSE MONEY. Same split as the other four products. LGM's three existing sections are
     # all producer-side; the agency section is new, and reads the SAME ladder rather than
     # recomputing one, so the two lenses cannot disagree about the policy being priced.
-    lens = st.radio("Lens", ["Buy — producer", "Sell — agency"],
-                    horizontal=True, key="lgm_lens", label_visibility="collapsed")
+    # st.segmented_control, not st.radio: it renders as a joined pill row, which is the
+    # same shape as the #lensSeg control inside the PRF, row-crop and DRP maps. Those three
+    # cannot use a Streamlit widget — switching would rerun and re-emit a 31 MB iframe — so
+    # the consistency has to come from picking the widget that already matches them.
+    lens = st.segmented_control(
+        "Lens", ["Buy — producer", "Sell — agency"], default="Buy — producer",
+        key="lgm_lens", label_visibility="collapsed") or "Buy — producer"
 
     buy = lens.startswith("Buy")
     sections = ([("deductible ladder", _render_ladder),

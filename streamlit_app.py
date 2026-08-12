@@ -97,6 +97,28 @@ st.markdown("""
   }
   .stTabs [data-testid="stTab"] .react-aria-SelectionIndicator { background-color: #fff; }
 
+  /* THE LENS SWITCH, on the tabs that have no iframe (LGM, LRP). PRF, row crop and DRP
+     carry their own copy of this inside the map, because switching a Streamlit widget would
+     rerun and re-emit an iframe up to 31 MB. The two implementations therefore cannot be
+     shared — so they are matched instead: same joined-pill shape, same ink-on-white active
+     state, deliberately NOT the green the filter controls use, because the lens changes
+     whose numbers the page shows rather than filtering within them.
+
+     SCOPED BY WIDGET KEY, not by widget type. Streamlit emits the key as a class on the
+     element container (st-key-lgm_lens, st-key-lrp_lens), and the control's own test id is
+     stButtonGroup — shared with every other segmented control and pill row in the app.
+     Styling by type would repaint unrelated widgets; styling by key hits exactly the two
+     lenses. The active state is aria-checked, not aria-selected. */
+  /* !important on the two paint properties only. Streamlit's own checked-state rule is an
+     emotion-generated class with higher specificity than anything selector-based here can
+     reach without it — font-weight landed, background did not, which left the control
+     half-styled. Kept off font-size so the theme can still scale text. */
+  .st-key-lgm_lens button[aria-checked="true"],
+  .st-key-lrp_lens button[aria-checked="true"] {
+      background: #0b0b0b !important; color: #fff !important; font-weight: 650;
+  }
+  .st-key-lgm_lens button, .st-key-lrp_lens button { font-size: 0.8rem; }
+
   /* level 2 — same treatment, green, and smaller so depth reads before colour does. The
      extra .stTabs is what scopes it: a tab list inside a tab list. Keying off NESTING rather
      than order or label means renaming or reordering a tab cannot break it. */

@@ -1566,6 +1566,48 @@ var DATA = __PAYLOAD__;
   }
 
   // CBV tooltip — county detail for the County Base Value metric.
+  // NO PRF METRIC SUMS ACROSS COUNTIES. CBV is a per-acre county figure, win rate is a
+  // share, and the three return metrics are per $1 or per acre — adding any of them up
+  // produces a number with no meaning. So the state box shows the RANGE across the state's
+  // counties, which is honest about the spread and invents nothing. (The row-crop map does
+  // carry summable dollar totals, which is why its version has a SUMMABLE list and this
+  // one does not.)
+  function stateTip(fips2) {
+    // At the nation level the hover outlines the STATE, because that is what a click
+    // selects. Describing a county in the box beside it was the mismatch: the highlight
+    // said one thing and the tooltip another, with no way to tell which the number was for.
+    var vals = [], best = null, bestFips = null;
+    // CBV is keyed by county in CBV.counties; every optimizer metric in OPT.counties.
+    var src = (metric === "cbv") ? CBV.counties : OPT.counties;
+    for (var fips in (src || {})) {
+      if (String(fips).slice(0, 2) !== fips2) continue;
+      var v = valFor(fips);
+      if (v === null || v === undefined) continue;
+      vals.push(v);
+      if (best === null || v > best) { best = v; bestFips = fips; }
+    }
+    var h = '<div class="t-name">' + esc(stateNameOf(fips2)) + ' &mdash; ' +
+            selLabel() + '</div>';
+    if (!vals.length) {
+      return h + '<div class="t-val">no county in this state has a value for this ' +
+             'selection</div>';
+    }
+    h += '<div class="t-val">' + esc(METRICS[metric].legend) + ': <b>' +
+         fmtFull(Math.min.apply(null, vals)) + ' &ndash; ' +
+         fmtFull(Math.max.apply(null, vals)) + '</b> across counties</div>';
+    h += '<div class="t-line">' + vals.length +
+         (vals.length === 1 ? ' county' : ' counties') +
+         ' with a value &mdash; a range, not an average: ' +
+         'every PRF metric here is a rate or a per-unit figure, and a state mean would need ' +
+         'weights this box cannot show</div>';
+    if (bestFips) {
+      h += '<div class="t-line">best county: ' +
+           esc(DATA.county_names[bestFips] || bestFips) + ' at ' + fmtFull(best) + '</div>';
+    }
+    h += '<div class="t-more">Click to zoom in and read counties individually.</div>';
+    return h;
+  }
+
   function cbvTip(d) {
     var v = cbvFor(d.id);
     return '<div class="t-name">' + esc(nameFor(d)) + ' County &mdash; ' + selLabel() + '</div>' +
@@ -1664,7 +1706,10 @@ var DATA = __PAYLOAD__;
     // either way, because the choropleth is shaded by county at every level.
     showHover(level === 0 ? (stateById[String(d.id).slice(0, 2)] || d) : d);
     tip.style.display = "block";
-    tip.innerHTML = metric === "cbv" ? cbvTip(d) : optTip(d);
+    // The box must describe whatever the outline is around — see showHover above.
+    tip.innerHTML = (level === 0)
+      ? stateTip(String(d.id).slice(0, 2))
+      : (metric === "cbv" ? cbvTip(d) : optTip(d));
     var wrap = document.getElementById("mapWrap").getBoundingClientRect();
     var x = ev.clientX - wrap.left + 14, y = ev.clientY - wrap.top + 10;
     if (x > wrap.width - 340) x -= 360;

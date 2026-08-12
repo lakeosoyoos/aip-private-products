@@ -3143,6 +3143,48 @@ var DATA = __PAYLOAD__;
     return h;
   }
 
+  // METRICS THAT ADD UP ACROSS COUNTIES. A state total is only meaningful for a dollar
+  // amount; the rest are rates and per-acre figures, where summing is nonsense and a mean
+  // needs weights the reader cannot see. Those get a RANGE across the state's counties
+  // instead — honest about the spread, and it does not invent a number.
+  var SUMMABLE = { total: 1, adjtotal: 1, commtot: 1 };
+
+  function stateTipHtml(fips2) {
+    // At the nation level the hover outlines the STATE, because that is what a click
+    // selects. Describing a county in the box beside it was the mismatch: highlight said
+    // one thing, tooltip said another, and the reader had no way to know which the number
+    // belonged to.
+    var vals = [], best = null, bestFips = null, n = 0, sum = 0;
+    Object.keys(COUNTIES).forEach(function (f) {
+      if (String(f).slice(0, 2) !== fips2) return;
+      var v = valFor(f);
+      if (v === null || v === undefined) return;
+      n += 1; sum += v; vals.push(v);
+      if (best === null || v > best) { best = v; bestFips = f; }
+    });
+
+    var h = '<div class="t-name">' + esc(stateNameOf(fips2)) + ' &mdash; ' +
+            selLabel() + '</div>';
+    if (!n) {
+      return h + '<div class="t-val">no county in this state has a value for this ' +
+             'selection</div>';
+    }
+    h += '<div class="t-val">' + esc(METRICS[metric].legend) + ': <b>' +
+         (SUMMABLE[metric] ? fmtFull(sum) : fmtFull(Math.min.apply(null, vals)) +
+          ' &ndash; ' + fmtFull(Math.max.apply(null, vals))) + '</b>' +
+         (SUMMABLE[metric] ? ' across the state' : ' across counties') + '</div>';
+    h += '<div class="t-math">' + n + (n === 1 ? ' county' : ' counties') +
+         ' with a value' + (SUMMABLE[metric] ? '' : ' — a range, not an average: these are ' +
+         'per-acre and per-dollar figures and a state mean would need weights this box ' +
+         'cannot show') + '</div>';
+    if (bestFips) {
+      h += '<div class="t-math">best county: ' +
+           esc(DATA.county_names[bestFips] || bestFips) + ' at ' + fmtFull(best) + '</div>';
+    }
+    h += '<div class="t-flag">Click to zoom in and read counties individually.</div>';
+    return h;
+  }
+
   function tipHtml(d) {
     var fips = String(d.id), s = stats(fips);
     var h = '<div class="t-name">' + esc(nameFor(d)) + ' County &mdash; ' + selLabel() + '</div>';
@@ -3203,7 +3245,10 @@ var DATA = __PAYLOAD__;
     // either way, because the choropleth is shaded by county at every level.
     showHover(level === 0 ? (stateById[String(d.id).slice(0, 2)] || d) : d);
     tip.style.display = "block";
-    tip.innerHTML = tipHtml(d);
+    // The box must describe whatever the outline is around — see showHover above.
+    tip.innerHTML = (level === 0)
+      ? stateTipHtml(String(d.id).slice(0, 2))
+      : tipHtml(d);
     var wrap = document.getElementById("mapWrap").getBoundingClientRect();
     var x = ev.clientX - wrap.left + 14, y = ev.clientY - wrap.top + 10;
     if (x > wrap.width - 370) x -= 390;

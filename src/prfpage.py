@@ -1781,7 +1781,13 @@ var DATA = __PAYLOAD__;
           return scale(v);
         })
         .on("mousemove", function (ev, d) { hoverGrid.call(this, ev, d, fips, gdm); })
-        .on("mouseout", unhover);
+        .on("mouseout", unhover)
+        // TERMINAL SHAPE: nothing below this level to drill into, so the click does
+        // NOTHING — and specifically must not reach the background handler, which zooms OUT.
+        // Clicking the thing you are already looking at should never throw you back up a
+        // level: "no deeper" and "go back" are different intentions and only one of them was
+        // expressed. stopPropagation is the whole fix.
+        .on("click", function (ev) { ev.stopPropagation(); });
   }
 
   function hoverGrid(ev, d, fips, gdm) {

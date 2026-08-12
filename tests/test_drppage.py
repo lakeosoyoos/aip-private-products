@@ -395,3 +395,22 @@ def test_the_commission_metric_says_no_value_rather_than_zero(populated):
                                 d3_js="", topojson_js="", atlas={})
     assert "no commission rate on file" in html
     assert "return null;" in html.split("function commFrom")[1][:400]
+
+
+def test_a_shape_you_cannot_drill_into_swallows_the_click(populated):
+    """Clicking a county on the DRP map used to ZOOM OUT.
+
+    DRP is sold statewide — counties are drawn as one flat fill and there is nothing beneath
+    them — so the county cells carried mousemove and mouseout but no click handler. The click
+    bubbled to the background handler, whose job is drillOut. Clicking the thing you are
+    already looking at threw you back up a level.
+
+    "Nothing deeper here" and "take me back" are different intentions and only one of them
+    was ever expressed, so a terminal shape now swallows its click and does nothing at all.
+    """
+    html = render_drp_page_html(build_drp_page_payload(populated),
+                                d3_js="", topojson_js="", atlas={})
+    assert 'svg.on("click", function () { drillOut(); });' in html, "background zoom-out exists"
+    cells = html.split('.attr("class", "countycell")')[1][:700]
+    assert '.on("click", function (ev) { ev.stopPropagation(); })' in cells, (
+        "county cells must stop the click reaching the background zoom-out")

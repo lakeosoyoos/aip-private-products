@@ -1208,7 +1208,13 @@ var DATA = __PAYLOAD__;
         .attr("d", path)
         .attr("fill", fill)        // ONE colour: county code 998, drawn
         .on("mousemove", function (ev, d) { hoverCounty.call(this, ev, d); })
-        .on("mouseout", unhover);
+        .on("mouseout", unhover)
+        // TERMINAL SHAPE: nothing below this level to drill into, so the click does
+        // NOTHING — and specifically must not reach the background handler, which zooms OUT.
+        // Clicking the thing you are already looking at should never throw you back up a
+        // level: "no deeper" and "go back" are different intentions and only one of them was
+        // expressed. stopPropagation is the whole fix.
+        .on("click", function (ev) { ev.stopPropagation(); });
   }
 
   function applyLevel() {

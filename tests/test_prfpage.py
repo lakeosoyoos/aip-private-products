@@ -1115,3 +1115,16 @@ def test_a_card_with_no_product_column_serves_whoever_asked(tmp_path):
     csv.write_text("aip_code,aip_name,commission_pct\nX1,Test,11.5\n")
     for prod in ("PRF", "LRP"):
         assert load_aip_commission(str(csv), product=prod)["aips"][0]["pct"] == 11.5
+
+
+def test_grid_cells_swallow_the_click_rather_than_zooming_out(merged):
+    """Same rule as DRP's counties. Grid cells are the deepest level PRF has — RMA prices a
+    0.25-degree lattice and there is nothing under it — so a click there has nowhere to go.
+    Without its own handler it bubbled to the background, which zooms OUT, so clicking the
+    cell you were inspecting threw you back to the state view."""
+    html = render_prf_page_html(build_prf_page_payload(merged),
+                                d3_js="", topojson_js="", atlas={})
+    assert 'svg.on("click", function () { drillOut(); });' in html
+    # window has to clear the explanatory comment that precedes the handler
+    cells = html.split('.attr("class", "gridcell")')[1][:1400]
+    assert '.on("click", function (ev) { ev.stopPropagation(); })' in cells

@@ -939,8 +939,15 @@ backtest once a full season has accumulated and re-tune.
 """
 
 
+# Recorded days a (tenor x coverage) cell needs before its average is shown at all. Three
+# observations is not a baseline, and an average of three printed beside averages of thirty
+# invites reading them as equally solid. Cells below this are left BLANK, and the chart says
+# so — see build_chart_figure's Average Savings panel.
+MIN_HIST_DAYS = 5
+
+
 def add_history_from_snapshots(grid, commodity, lookback, today_date=None,
-                               min_days=5, low_base_floor=0.10,
+                               min_days=MIN_HIST_DAYS, low_base_floor=0.10,
                                min_buy_delta=0.25,
                                min_richness=MIN_RICHNESS_BUY):
     """
@@ -1281,9 +1288,16 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
                     annot=annot_avg, fmt="",
                     cbar_kws={**cbar_kw, "label": "$/cwt"}, **hm_kw)
         n_days = int(grid["n_hist"].max()) if "n_hist" in grid.columns else 0
-        axes[2].set_title(f"Average Savings — {n_days} recorded day(s)\n"
-                             "each day priced with its own curve (never "
-                             "re-priced)", fontsize=TITLE_FS)
+        # n_days is the MAXIMUM across cells, not a figure every cell shares — coverage
+        # levels added to the offer later have their own, shorter history. Saying so beside
+        # the number, and saying what a blank row means, is the difference between "this
+        # chart is broken" and "that level is too new to average".
+        thin = int((grid["n_hist"] < MIN_HIST_DAYS).sum()) if "n_hist" in grid.columns else 0
+        axes[2].set_title(
+            f"Average Savings — up to {n_days} recorded day(s)\n"
+            "each day priced with its own curve (never re-priced); blank = fewer than "
+            f"{MIN_HIST_DAYS} recorded days"
+            + (f" ({thin} cells)" if thin else ""), fontsize=TITLE_FS)
         axes[2].set_xlabel("Tenor (weeks)", fontsize=LABEL_FS)
         axes[2].set_ylabel("Coverage Level", fontsize=LABEL_FS)
         axes[2].set_xticklabels(tick_labels, fontsize=TICK_FS)

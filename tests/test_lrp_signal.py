@@ -118,3 +118,67 @@ def test_the_grid_carries_return_per_producer_dollar_both_ways():
     assert (priced["ret_mkt"] < 1.0).any(), (
         "ret_mkt must be able to fall below 1.00 — otherwise it cannot express RMA "
         "out-pricing the market")
+
+
+def test_the_average_panel_explains_its_blank_rows():
+    """"Why does the Average Savings chart have blank white rows?" — because six coverage
+    levels have three days of history against a five-day minimum, and nothing on the chart
+    said so.
+
+    Those six (0.875, 0.925, 0.96, 0.97, 0.98, 0.99) first appear in lrp_gap_history.csv on
+    2026-08-07, the day COVERAGE_LEVELS was corrected to include them; the other six go back
+    to June. So the blanks are new levels, not missing data, and they fill themselves in.
+
+    The gate is right — an average of three observations printed beside averages of thirty
+    would read as equally solid. What was wrong was the silence. The sibling richness panel
+    already explained its own blanks; this one did not.
+    """
+    import inspect
+
+    import lrp_signal
+
+    assert lrp_signal.MIN_HIST_DAYS == 5
+    src = inspect.getsource(lrp_signal.build_chart_figure)
+    assert "blank = fewer than " in src, "the panel must say what a blank row means"
+    assert "MIN_HIST_DAYS" in src, "and quote the gate rather than restate a literal"
+    # the headline count is a maximum, not a figure every cell shares
+    assert "up to {n_days} recorded day" in src
+
+    hist = inspect.getsource(lrp_signal.add_history_from_snapshots)
+    assert "min_days=MIN_HIST_DAYS" in hist or "min_days=MIN_HIST_DAYS," in hist, (
+        "the gate and the caption must come from one constant, or they can disagree")
+
+
+def test_a_thin_cell_yields_no_average_and_no_richness(monkeypatch):
+    """Below the minimum, everything downstream must be ABSENT rather than computed from too
+    little: no average, no richness multiple, BUY off. A richness ratio built on three days is
+    exactly the kind of number that reads as a signal when it is noise.
+
+    load_gap_history is stubbed rather than reading the real CSV — the point under test is the
+    gate, and binding it to whatever happens to be recorded today would make the test drift.
+    """
+    import datetime as dt
+
+    import pandas as pd
+
+    import lrp_signal as L
+
+    rows = ([{"date": f"2026-08-{d:02d}", "commodity": "feeder", "weeks": 13,
+              "coverage_level": 0.99, "gap": 0.9, "gap_pct": 0.35} for d in range(1, 4)] +
+            [{"date": f"2026-08-{d:02d}", "commodity": "feeder", "weeks": 13,
+              "coverage_level": 0.95, "gap": 0.9, "gap_pct": 0.35} for d in range(1, 31)])
+    monkeypatch.setattr(L, "load_gap_history", lambda *_a, **_k: pd.DataFrame(rows))
+
+    grid = pd.DataFrame([
+        {"weeks": 13, "coverage_level": 0.99, "gap": 1.0, "gap_pct": 0.4},
+        {"weeks": 13, "coverage_level": 0.95, "gap": 1.0, "gap_pct": 0.4}])
+    out = L.add_history_from_snapshots(grid, "feeder", 60,
+                                       today_date=dt.date(2026, 9, 1))
+
+    thin = out[out["coverage_level"] == 0.99].iloc[0]
+    thick = out[out["coverage_level"] == 0.95].iloc[0]
+    # pandas stores the None as NaN in a float column, so test for MISSING rather than for
+    # the identity None — the behaviour is "blank", not "the literal None object".
+    assert pd.isna(thin["hist_avg_gap"]) and thin["n_hist"] == 0, "3 days must not average"
+    assert pd.isna(thin["richness"]) and not thin["buy_ok"]
+    assert pd.notna(thick["hist_avg_gap"]) and thick["n_hist"] == 30

@@ -1193,7 +1193,11 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
     # (10pt ticks) arrive as ~5pt and the axis becomes unreadable. Raising dpi does NOT help:
     # it scales the whole image equally and the browser scales it right back down. The only
     # lever is point size relative to figure size.
-    TICK_FS, LABEL_FS, TITLE_FS, ANNOT_FS = 15, 15, 15, 11
+    # ANNOT_FS is set by the DENSEST panel, not the roomiest. The decomposition panel puts
+    # two labelled figures in every cell ("sub $3.36" over "vol $5.09"), ~9 characters a line
+    # against a 0.78in cell — at 11pt those run into their neighbours. 9pt clears it, and the
+    # single-value panels lose nothing they needed.
+    TICK_FS, LABEL_FS, TITLE_FS, ANNOT_FS = 15, 15, 15, 9
     hm_kw = dict(linewidths=0.8, linecolor="white",
                  annot_kws={"size": ANNOT_FS, "fontweight": "bold"})
     cbar_kw = dict(shrink=0.6, aspect=15)
@@ -1209,7 +1213,16 @@ def build_chart_figure(grid, commodity, spot, cme_source, head, banner=None):
     # The cost is a tall image. That is the right trade for a reference table someone reads
     # a row at a time: scrolling is cheap, squinting is not.
     n_panels = 4 if has_history else 2
-    fig, axes = plt.subplots(n_panels, 1, figsize=(13, 5.6 * n_panels))
+    # PANEL GEOMETRY IS SET FROM THE GRID SHAPE, not picked by eye. Each panel draws 10
+    # tenor columns x 12 coverage rows. At 13 x 5.6 the plotting area came out 9.4 x 4.1in,
+    # making every cell 2.78x wider than tall — which is what reads as "stretched": the
+    # heatmap stops looking like a grid of values and starts looking like a bar chart.
+    #
+    # Target is ~1.7, wide enough for the two-line annotations ("$23.74" over "$308,656")
+    # and no wider. Narrowing the figure as well as heightening the panel does double duty:
+    # it lifts the aspect AND raises on-screen type, since Streamlit fits to the container
+    # so px-per-inch is 809/width.
+    fig, axes = plt.subplots(n_panels, 1, figsize=(11, 7.0 * n_panels))
 
     # ── Panel 1 (top-left): Total gap $/cwt ──
     p_gap = pivot("gap")

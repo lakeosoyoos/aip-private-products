@@ -20,7 +20,7 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lrp_signal import (
-    CWT_PER_HEAD, TENORS_WEEKS,
+    COVERAGE_LEVELS, CWT_PER_HEAD, TENORS_WEEKS,
     fetch_lrp_current, fetch_lrp_reference, fetch_cme_futures_curve,
     get_cme_source_label,
     build_grid, record_gap_snapshot, ensure_gap_history,
@@ -351,14 +351,21 @@ def render():
                             hist.groupby("source")["date"].nunique()
                                 .to_dict().items())
                 + "  |  each day priced with its own curve")
+            # DRIVEN BY COVERAGE_LEVELS, never a literal list. The hardcoded one here offered
+            # 70% — which RMA does not sell, so it always answered "no history for this cell" —
+            # and hid 87.5, 92.5, 96, 97, 98 and 99, which it does. Same stale-constant bug as
+            # the blank rows on the Average Savings panel: COVERAGE_LEVELS was corrected and
+            # this copy was not. A derived list cannot drift from the levels that exist.
+            #
+            # %g on the label because the list is no longer all integers: 0.875 must read
+            # "87.5%", not "87%", or two distinct levels collapse to one string.
             pick = st.selectbox(
-                "Cell", [f"{int(c * 100)}% / {w}w"
+                "Cell", [f"{c * 100:g}% / {w}w"
                          for w in TENORS_WEEKS
-                         for c in [1.0, 0.95, 0.90, 0.85, 0.80,
-                                   0.75, 0.70]],
+                         for c in sorted(COVERAGE_LEVELS, reverse=True)],
                 index=0, key="lrp_hist_cell")
             cov_s, wk_s = pick.split(" / ")
-            cov_v = int(cov_s.rstrip("%")) / 100.0
+            cov_v = float(cov_s.rstrip("%")) / 100.0
             wk_v = int(wk_s.rstrip("w"))
             cell = hist[(hist["weeks"] == wk_v)
                         & (hist["coverage_level"].round(4)
@@ -367,7 +374,12 @@ def render():
                 st.info("No history for this cell.")
             else:
                 cell = cell.sort_values("date").set_index("date")
-                st.line_chart(cell[["gap"]], height=280)
+                # The series is named "gap" in the frame, and st.line_chart labels the axis
+                # with the column name — so the y axis read "gap" with no units anywhere on
+                # the chart. The units were in the caption BELOW it, which is not where a
+                # reader looks to find out what they are looking at.
+                st.line_chart(cell[["gap"]], height=280,
+                              x_label="Date", y_label="Gap ($/cwt)")
                 st.caption(f"Gap $/cwt by day for {pick} — "
                            f"avg ${cell['gap'].mean():.2f}, "
                            f"last ${cell['gap'].iloc[-1]:.2f}")

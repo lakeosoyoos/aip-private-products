@@ -131,3 +131,49 @@ def test_the_measured_return_is_stated_not_just_the_modelled_one():
     assert "0.66x" in lrp_page.LRP_MEASURED_NOTE
     assert "Summary of Business" in lrp_page.LRP_MEASURED_NOTE
     assert "0.09x" in lrp_page.LRP_MEASURED_NOTE      # and the range, not just the average
+
+
+def test_the_gap_history_picker_is_derived_from_COVERAGE_LEVELS():
+    """It carried a hardcoded list — [1.0, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70] — which was
+    wrong in both directions. It offered 70%, which RMA does not sell, so choosing it always
+    answered "no history for this cell"; and it hid 87.5, 92.5, 96, 97, 98 and 99, which RMA
+    does sell, so six coverage levels could not be charted at all.
+
+    Same stale-constant bug as the blank rows on the Average Savings panel: COVERAGE_LEVELS
+    was corrected on 2026-08-07 and this copy was not. Deriving it is the fix that holds.
+    """
+    import inspect
+
+    import lrp_page
+
+    src = inspect.getsource(lrp_page.render)
+    assert "sorted(COVERAGE_LEVELS, reverse=True)" in src, "the picker must be derived"
+    assert "0.70]" not in src and "[1.0, 0.95" not in src, "no hardcoded coverage list"
+
+
+def test_every_coverage_label_parses_back_to_its_level():
+    """The list stopped being all-integer when 87.5 and 92.5 arrived, so the label format had
+    to change with it. "%d" would render both 87.5 and 87 as "87%" — two levels collapsing to
+    one string, which then parses back to the wrong one. The label must survive the round
+    trip and stay unique."""
+    from lrp_signal import COVERAGE_LEVELS
+
+    labels = [f"{c * 100:g}%" for c in COVERAGE_LEVELS]
+    assert len(set(labels)) == len(COVERAGE_LEVELS), "two levels share a label"
+    for c, label in zip(COVERAGE_LEVELS, labels):
+        assert round(float(label.rstrip("%")) / 100.0, 4) == round(c, 4), label
+    assert "87.5%" in labels and "92.5%" in labels
+    assert "70%" not in labels
+
+
+def test_the_gap_chart_axis_carries_its_units():
+    """st.line_chart labels the y axis with the column name, so it read "gap" — units nowhere
+    on the chart, only in the caption below it, which is not where a reader looks to find out
+    what they are looking at."""
+    import inspect
+
+    import lrp_page
+
+    src = inspect.getsource(lrp_page.render)
+    assert 'y_label="Gap ($/cwt)"' in src, "the y axis must state its units"
+    assert 'x_label="Date"' in src

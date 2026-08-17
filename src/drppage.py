@@ -1088,9 +1088,13 @@ var DATA = __PAYLOAD__;
   }
 
   // ---------------- tooltip
-  function tipHtml(fips) {
+  // `heading` overrides the title line. The county hover passes "Polk County, Iowa" so the
+  // box names the shape under the cursor; everything below it is still the STATE's number,
+  // because that is the only grain DRP has. Without the override the county line and
+  // tipHtml's own state line stacked, printing the state name twice.
+  function tipHtml(fips, heading) {
     var c = cellFor(fips), v = valFor(fips);
-    var h = '<div class="t-name">' + esc(stateNameOf(fips)) + '</div>' +
+    var h = '<div class="t-name">' + esc(heading || stateNameOf(fips)) + '</div>' +
             '<div class="t-val">' + esc(METRICS[metric].legend) + ': ' + fmtFull(v) + '</div>';
     if (!c) {
       var a = AVAIL[fips];
@@ -1141,10 +1145,17 @@ var DATA = __PAYLOAD__;
   function hoverCounty(ev, d) {
     d3.select(this).classed("hovered", true);
     var fips = String(d.id).slice(0, 2);
-    place(ev, tipHtml(fips) +
+    // NAME THE COUNTY, even though the number is the state's. The box described the state
+    // while the highlight was around a county, so the reader could not tell which county
+    // they were on — and on a shape they can neither drill into nor identify, the map stops
+    // being a map. The value below it is still the statewide one and still says so; what
+    // changes is that the reader knows where the cursor is.
+    var county = (d.properties && d.properties.name) || "County";
+    place(ev,
+      tipHtml(fips, county + " County, " + stateNameOf(fips)) +
       '<div class="t-warn">DRP is sold statewide (county code 998): every county in ' +
-      esc(stateNameOf(fips)) + ' carries this same value. There is no county-level DRP ' +
-      'number to drill into.</div>');
+      esc(stateNameOf(fips)) + ' carries this same value, including this one. There is no ' +
+      'county-level DRP number to drill into.</div>');
   }
 
   // ---------------- drill-down: nation -> state, and NO FURTHER

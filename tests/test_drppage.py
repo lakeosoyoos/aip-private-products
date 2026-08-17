@@ -414,3 +414,24 @@ def test_a_shape_you_cannot_drill_into_swallows_the_click(populated):
     cells = html.split('.attr("class", "countycell")')[1][:700]
     assert '.on("click", function (ev) { ev.stopPropagation(); })' in cells, (
         "county cells must stop the click reaching the background zoom-out")
+
+
+def test_a_hovered_county_is_named_even_though_the_number_is_the_states(populated):
+    """DRP is sold statewide, so a county carries no number of its own — but it is still the
+    shape under the cursor, and the box described the STATE while the highlight was around a
+    COUNTY. On a shape you can neither drill into nor identify, the map stops being a map.
+
+    The county is now named in the heading; everything below it is still the state's figure
+    and the note still says so. tipHtml takes the heading as a parameter rather than the
+    caller stacking a second title line, which printed the state name twice.
+    """
+    html = render_drp_page_html(build_drp_page_payload(populated),
+                                d3_js="", topojson_js="", atlas={})
+    assert "function tipHtml(fips, heading)" in html
+    assert 'esc(heading || stateNameOf(fips))' in html
+    hover = html.split("function hoverCounty")[1][:900]
+    assert 'd.properties && d.properties.name' in hover, "county name comes off the feature"
+    assert 'County, " + stateNameOf(fips)' in hover
+    # the statewide caveat must survive — naming the county must not imply a county number
+    assert "sold statewide (county code 998)" in hover
+    assert "including this one" in hover
